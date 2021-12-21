@@ -1,10 +1,8 @@
 from aiohttp import web
 import socketio
 import os
-from gui.lane_finder import LaneFinder
-from gel_tools.band_finder import find_bands, load_image, load_image_b64
+from band_finder import find_bands, load_image_b64
 import cv2
-from matplotlib import image
 from matplotlib import pyplot as plt
 import skimage
 from PIL import Image
@@ -258,25 +256,30 @@ async def removeBand(sid, band_no):
     await sio.emit("imageUpdated", {"non_inv": new_image_string, "inv": inverted_image_string})
 
 
-# Define aiohttp endpoints
-# This will deliver the main.html file to the client once connected.
-async def index(request):
-    print("request")
-    with open('gui/main.html') as f:
-        return web.Response(text=f.read(), content_type='html')
-
-# Bind our aiohttp endpoint to our app router
-app.router.add_get('/', index)
-
-# Add the static css and js files to the app router
-app.router.add_static('/', 'gui/static')
-
-# We kick off our server
-if __name__ == '__main__':
-    web.run_app(app)
 
 async def button_find_bands(request):
     return web.Response()
+
+
+# Define aiohttp endpoints
+# This will deliver the main.html file to the client once connected.
+# async def index(request):
+#     print("request")
+#     with open('gui/main.html') as f:
+#         return web.Response(text=f.read(), content_type='html')
+#
+
+# Bind our aiohttp endpoint to our app router
+# app.router.add_get('/', index)
+
+# Add the static css and js files to the app router
+# app.router.add_static('/', 'gui/static')
+
+# We kick off our server
+if __name__ == '__main__':
+    web.run_app(app, host='0.0.0.0', port=9111)
+
+
 
 
 
