@@ -31,8 +31,10 @@
   <title>Automatic Gel Analysis</title>
 </head>
 <body>
-  <!-- Main script-->
-  <script src="../js/client_logic.js"></script>
+  <!-- Main scripts-->
+  <script src="../js/server_link_logic.js"></script>
+  <script src="../js/ui_logic.js"></script>
+  <script src="../js/band_logic.js"></script>
 
   <!-- Top menu -->
   <nav class="navbar navbar-dark bg-dark fixed-top">
@@ -57,14 +59,10 @@
           <span class="fas fa-file-export"></span>
         </button>
         <ul class="dropdown-menu dropdown-menu-dark" aria-labelledby="dropdownMenuButton2">
-          <li><a id="image_to_tif" class="dropdown-item" href="#">Band image to .tif</a></li>
-          <li><a id="profile_to_tif" class="dropdown-item" href="#">Lane profile to .tif</a></li>
-          <li><a id="profile_to_csv" class="dropdown-item" href="#">Lane profile to .csv</a></li>
-          <li><a id="data_to_csv" class="dropdown-item" href="#">Band data to .csv</a></li>
-          <li>
-            <hr class="dropdown-divider">
-          </li>
-          <li><a class="dropdown-item" href="#">Separated link</a></li>
+          <li><a id="image_to_tif" class="dropdown-item" href="#">Save segmented image</a></li>
+          <li><a id="profile_to_tif" class="dropdown-item" href="#">Save lane profile</a></li>
+          <li><a id="profile_to_csv" class="dropdown-item" href="#">Save lane profile to .csv</a></li>
+          <li><a id="data_to_csv" class="dropdown-item" href="#">Save band data to .csv</a></li>
         </ul>
       </div>
 
@@ -74,20 +72,22 @@
     </div>
   </nav>
 
-  <!-- Loaded image display (this is hidden until the user selects an image -->
+  <!-- Loaded image display (this is hidden until the user selects an image) -->
   <div id="second_screen" style="display: none" class="container">
     <div class="row justify-content-around">
 
       <!-- Main gel image with bands -->
-      <div id="loaded_img" style="position: relative" class="mt-5 p-2 bg-dark col-7 border border-2">
-        <img id="preview_img" src="/examples/images/transparent.png" alt="" class="img-fluid" height="100%"/> <!-- remove this or replace -->
-        <div id="band_rectangles" style="position: absolute; top:0px; left: 0; bottom: 0; right: 0; height: 100%">
+      <div class="mt-5 p-2 bg-dark col-8 border border-2">
+        <div id="loaded_img" style="position: relative; display: inline-block;">
+            <img id="preview_img" src="data:," alt="" class="img-fluid" height="100%"/>
+            <div id="band_rectangles"  style="position: absolute; top:0; left: 0; bottom: 0; right: 0">
+            </div>
         </div>
       </div>
 
       <!-- Band profile -->
       <div id="lane_plot" class="mt-5 p-2 col-2 bg-light">
-        <img id="int_plot" src="" class="img-fluid mx-auto d-float" height="100%"/>
+        <img id="int_plot" src="" class="img-fluid mx-auto d-float" height="100%" alt=""/>
       </div>
 
       <!-- Band data table -->
@@ -145,15 +145,15 @@
         </div>
         <div class="modal-body">
           <label for="fg_value" class="form-label">Foreground value</label>
-          <output style="float: right"></output>
+          <output style="float: right" id="out_foreground">35</output>
           <input type="range" class="form-range" id="fg_value" autocomplete="off" min="0" max="100" value="35"
                  oninput="this.previousElementSibling.value = this.value">
           <label for="bg_value" class="form-label">Background value</label>
-          <output style="float: right"></output>
+          <output style="float: right" id="out_background">27</output>
           <input type="range" class="form-range" id="bg_value" autocomplete="off" min="0" max="100" value="27"
                  oninput="this.previousElementSibling.value = this.value">
           <label for="repetitions" class="form-label">Repetitions</label>
-          <output style="float: right"></output>
+          <output style="float: right" id="out_repetitions">1</output>
           <input type="range" class="form-range" id="repetitions" autocomplete="off" min="1" max="5" value="1"
                  oninput="this.previousElementSibling.value = this.value">
         </div>
