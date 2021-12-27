@@ -1,7 +1,7 @@
 import cv2
 import matplotlib.pyplot as plt
 from gel_tools.utils import Preprocessor
-from gel_tools.lane_finder import LaneFinder
+from scratch.lane_finder import LaneFinder
 
 
 if __name__ == '__main__':
