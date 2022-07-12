@@ -1,8 +1,7 @@
 # To be used in EDDIE
 
-import argparse
+
 import logging
-import sys
 from pathlib import Path
 
 import torch
@@ -13,21 +12,19 @@ from torch import optim
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
-from segmentation.unet_utils.data_loading import BasicDataset, CarvanaDataset
+from segmentation.unet_utils.data_loading import BasicDataset
 from segmentation.unet_utils.dice_score import dice_loss, multiclass_dice_coeff, dice_coeff
 from segmentation.unet import UNet
-
-import torchshow as ts
 
 #######################################################################################################################
 # Path of base data, image directory, mask directory, and checkpoints
 #######################################################################################################################
 
-# dir_img = Path('./data/imgs/')
+
 dir_img = Path('/exports/csce/eddie/eng/groups/DunnGroup/kiros/2022_summer_intern/UNet_Training_With_Images/Carvana/Input/')
-# dir_mask = Path('./data/masks/')
+
 dir_mask = Path('/exports/csce/eddie/eng/groups/DunnGroup/kiros/2022_summer_intern/UNet_Training_With_Images/Carvana/Target/')
-# dir_checkpoint = Path('./checkpoints/')
+
 dir_checkpoint = Path('/exports/csce/eddie/eng/groups/DunnGroup/kiros/2022_summer_intern/UNet_Training_With_Images/checkpoints/')
 
 #######################################################################################################################
@@ -66,44 +63,6 @@ def evaluate(net, dataloader, device):
                 dice_score += multiclass_dice_coeff(mask_pred[:, 1:, ...], mask_true[:, 1:, ...],
                                                     reduce_batch_first=False)
 
-
-        # For checking if the middle parts are empty or just the image quality being bad
-        """
-        # size = [1,2,640,959]
-        # roi: 450,640 -> 650,800
-        
-        new_tensor = torch.empty(4, 640, 959)
-        for i in range(640):
-            for j in range(959):
-                if (mask_pred[0][0][i][j] == 1 and mask_pred[0][1][i][j] == 1):
-                    new_tensor[0][i][j] = 0
-                    new_tensor[1][i][j] = 0
-                    new_tensor[2][i][j] = 1
-                    new_tensor[3][i][j] = 0
-                elif (mask_pred[0][0][i][j] == 1 and mask_pred[0][1][i][j] == 0):
-                    new_tensor[0][i][j] = 1
-                    new_tensor[1][i][j] = 0
-                    new_tensor[2][i][j] = 0
-                    new_tensor[3][i][j] = 0
-                elif (mask_pred[0][0][i][j] == 0 and mask_pred[0][1][i][j] == 1):
-                    new_tensor[0][i][j] = 0
-                    new_tensor[1][i][j] = 1
-                    new_tensor[2][i][j] = 0
-                    new_tensor[3][i][j] = 0
-                else:
-                    new_tensor[0][i][j] = 0
-                    new_tensor[1][i][j] = 0
-                    new_tensor[2][i][j] = 0
-                    new_tensor[3][i][j] = 1
-
-        print(new_tensor)
-
-        print("Unique: ")
-        print(new_tensor.unique())
-        ts.show(new_tensor)"""
-
-        # break # for only doing one iteration of for loop when testing code
-
     net.train()
 
     # Fixes a potential division by zero error
@@ -112,15 +71,16 @@ def evaluate(net, dataloader, device):
     return dice_score / num_val_batches
 
 
-def train_net(net,
-              device,
-              epochs: int = 5,
-              batch_size: int = 1,
-              learning_rate: float = 1e-5,
-              val_percent: float = 0.1,
-              save_checkpoint: bool = True,
-              img_scale: float = 0.5,
-              amp: bool = False):
+def train_net(  net,
+                device,
+                epochs = 5,
+                batch_size = 1,
+                learning_rate = 1e-5,
+                val_percent = 0.1,
+                save_checkpoint = True,
+                img_scale = 0.5,
+                amp = False):
+
     # 1. Create dataset
     dataset = BasicDataset(dir_img, dir_mask, img_scale)
 
@@ -130,7 +90,7 @@ def train_net(net,
     train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
 
     # 3. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=4, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=0, pin_memory=True) # num_workers=4
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
@@ -149,8 +109,10 @@ def train_net(net,
         Checkpoints:     {save_checkpoint}
         Device:          {device.type}
         Images scaling:  {img_scale}
-        Mixed Precision: {amp}
-    ''')
+        Mixed Precision: {amp}''')
+
+
+
 
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
     optimizer = optim.RMSprop(net.parameters(), lr=learning_rate, weight_decay=1e-8, momentum=0.9)
@@ -235,13 +197,15 @@ def train_net(net,
 # Training the model
 #######################################################################################################################
 
-epochs = 5
+epochs = 1
 batch_size = 1
 learning_rate = 1e-5
-# load = False # initializes the weights randomly
-# To initialize the pre-trainined weights:
-load = "/exports/csce/eddie/eng/groups/DunnGroup/kiros/2022_summer_intern/UNet_Training_With_Images/Pre-trained/unet_carvana_scale0.5_epoch2.pth"
+
+load = False # initializes the weights randomly
+# Pre-trainined weights:
+# load = "/exports/csce/eddie/eng/groups/DunnGroup/kiros/2022_summer_intern/UNet_Training_With_Images/Pre-trained/unet_carvana_scale0.5_epoch2.pth"
 scale = 0.5
+
 amp = True
 bilinear = False
 classes = 2
@@ -275,28 +239,3 @@ train_net(net=net,
           img_scale=scale,
           val_percent=val / 100,
           amp=amp)
-
-#######################################################################################################################
-# To evaluate the trained weights
-#######################################################################################################################
-"""
-# I just randomly assigned values to the variables below
-img_scale = 0.5
-val_percent: float = 0.1
-
-# 1. Create dataset
-    dataset = BasicDataset(dir_img, dir_mask, img_scale)
-
-# 2. Split into train / validation partitions
-n_val = int(len(dataset) * val_percent)
-n_train = len(dataset) - n_val
-train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
-
-# 3. Create data loaders
-loader_args = dict(batch_size=batch_size, num_workers=4, pin_memory=True)
-train_loader = DataLoader(train_set, shuffle=True, **loader_args)
-val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
-
-# 4. Evaluation
-evaluate(net, val_loader, device = 'cuda' if torch.cuda.is_available() else 'cpu')
-"""
