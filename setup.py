@@ -2,7 +2,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="Automatic Gel Analysis",
+    name="GelGenie",
     author="FB, MA, KD",
     description="TBD",
     version="1.0.0",

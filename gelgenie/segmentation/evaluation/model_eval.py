@@ -6,10 +6,10 @@ import numpy as np
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from scipy import ndimage
-from segmentation.helper_functions.dice_score import dice_coeff
+from gelgenie.segmentation.helper_functions.dice_score import dice_coeff
 
-from segmentation.unet import UNet, smp_UNet, smp_UNetPlusPlus
-from segmentation.data_handling.dataloaders import BasicDataset, ImageDataset
+from gelgenie.segmentation.unet import UNet, smp_UNet, smp_UNetPlusPlus
+from gelgenie.segmentation.data_handling.dataloaders import BasicDataset, ImageDataset
 
 
 @click.command()

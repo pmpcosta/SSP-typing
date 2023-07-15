@@ -10,10 +10,10 @@ from pathlib import Path
 import logging
 import numpy as np
 
-from segmentation.helper_functions.dice_score import dice_loss
+from gelgenie.segmentation.helper_functions.dice_score import dice_loss
 from ..helper_functions.stat_functions import excel_stats
 from ..helper_functions.display_functions import plot_stats, show_segmentation
-from segmentation.evaluation.basic_eval import evaluate
+from gelgenie.segmentation.evaluation.basic_eval import evaluate
 from .training_setup import define_optimizer, define_scheduler
 from ..data_handling import prep_dataloader
 

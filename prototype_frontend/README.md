@@ -16,6 +16,6 @@ The python server will need to be initialized separately.
 
 To package the app for distribution, run one of the build commands in package.json.
 
-The python server needs to be bundled separately using `pyinstaller` and then placed in a new directory 'build' under frontend (not synced on git).
+The python server needs to be bundled separately using `pyinstaller` and then placed in a new directory 'build' under prototype_frontend (not synced on git).
 
 More details TBD.

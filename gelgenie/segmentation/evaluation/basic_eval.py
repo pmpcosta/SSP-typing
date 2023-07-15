@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from segmentation.helper_functions.dice_score import multiclass_dice_coeff, dice_coeff
+from gelgenie.segmentation.helper_functions.dice_score import multiclass_dice_coeff, dice_coeff
 
 
 def evaluate(net, dataloader, device):

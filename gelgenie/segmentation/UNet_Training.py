@@ -9,9 +9,9 @@ from torchinfo import summary
 
 import torch
 
-from segmentation.unet import UNet, smp_UNetPlusPlus, smp_UNet
-from segmentation.training.core_training import train_net
-from segmentation.helper_functions.general_functions import create_dir_if_empty
+from gelgenie.segmentation.unet import UNet, smp_UNetPlusPlus, smp_UNet
+from gelgenie.segmentation.training.core_training import train_net
+from gelgenie.segmentation.helper_functions.general_functions import create_dir_if_empty
 
 
 def experiment_setup(parameter_config, **kwargs):

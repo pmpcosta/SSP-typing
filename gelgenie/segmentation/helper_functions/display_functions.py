@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 from matplotlib import pyplot as plt
 
-from gel_tools.band_detection import watershed_seg
+from gelgenie.gel_tools.band_detection import watershed_seg
 
 
 def plot_img_and_mask(img, mask):
