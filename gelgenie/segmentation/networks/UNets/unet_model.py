@@ -1,8 +1,9 @@
 # code here taken from https://github.com/milesial/Pytorch-UNet/tree/e36c782fbfc976b7326182a47dd7213bd3360a7e
 """ Full assembly of the parts to form the complete network """
 
-from .unet_parts import *
+from gelgenie.segmentation.networks.UNets.unet_parts import DoubleConv, Down, Up, OutConv
 from segmentation_models_pytorch import UnetPlusPlus, Unet
+import torch.nn as nn
 
 
 class UNet(nn.Module):

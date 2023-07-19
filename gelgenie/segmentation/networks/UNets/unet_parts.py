@@ -1,7 +1,7 @@
 # code here taken from https://github.com/milesial/Pytorch-UNet/tree/e36c782fbfc976b7326182a47dd7213bd3360a7e
 """ Parts of the U-Net model """
 
-import torch
+from torch import cat
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -65,7 +65,7 @@ class Up(nn.Module):
         # if you have padding issues, see
         # https://github.com/HaiyongJiang/U-Net-Pytorch-Unstructured-Buggy/commit/0e854509c2cea854e247a9c615f175f76fbb2e3a
         # https://github.com/xiaopeng-liao/Pytorch-UNet/commit/8ebac70e633bac59fc22bb5195e513d5832fb3bd
-        x = torch.cat([x2, x1], dim=1)
+        x = cat([x2, x1], dim=1)
         return self.conv(x)
 
 
