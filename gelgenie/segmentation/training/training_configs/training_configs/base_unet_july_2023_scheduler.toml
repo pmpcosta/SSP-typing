@@ -1,4 +1,4 @@
-experiment_name = "base_smp_unet_small_data"  # configuration name
+experiment_name = "base_smp_unet_small_data_cosine_annealing"  # configuration name
 base_dir = '/exports/csce/eddie/eng/groups/DunnGroup/matthew/models_gelgenie'
 
 [processing]
