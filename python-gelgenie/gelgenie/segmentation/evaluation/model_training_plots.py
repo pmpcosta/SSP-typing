@@ -2,7 +2,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import seaborn as sns
-import numpy as np
 
 
 out_folder = '/Users/matt/Desktop'
