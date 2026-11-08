@@ -44,7 +44,7 @@ from skimage.measure import label, regionprops
 class Band:
     """A single connected gel band."""
 
-    RESERVED_KEYS = ("id", "area", "centroid_y", "centroid_x", "bbox", "lane")
+    RESERVED_KEYS = ("id", "area", "centroid_y", "centroid_x", "bbox", "lane", "extra")
 
     id: int
     area: int
