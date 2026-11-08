@@ -82,6 +82,8 @@ def segment_image(
 def _infer_dtype_max(raw: np.ndarray) -> float:
     if raw.dtype == np.uint16:
         return 65535.0
+    if np.issubdtype(raw.dtype, np.floating):
+        return 1.0  # QuPath pixel types report 1.0 as the float upper bound
     return 255.0
 
 
@@ -112,7 +114,13 @@ def segment(image, model, output, invert, percentile_norm, dtype_max, min_area,
 
     edges: Optional[List[float]] = None
     if lane_edges:
-        edges = [float(x) for x in lane_edges.split(",") if x.strip() != ""]
+        try:
+            edges = [float(x) for x in lane_edges.split(",") if x.strip() != ""]
+        except ValueError:
+            raise click.BadParameter(
+                f"expected comma-separated numbers, got {lane_edges!r}",
+                param_hint="--lane-edges",
+            )
 
     model_obj = GelGenieONNX(model_path=model)
     mask, bands = segment_image(

@@ -112,3 +112,31 @@ def test_normalize_rgb_channels_averaged():
     out = pp.normalize_image(arr, data_max_norm=True, dtype_max=255)
     assert out.ndim == 2
     np.testing.assert_allclose(out, np.full((4, 4), 60 / 255), rtol=1e-5)
+
+
+def test_normalize_rgba_averages_first_three_channels():
+    # alpha is dropped, RGB averaged (documented deviation is moot vs Java,
+    # which never sees RGBA, but the behavior must be pinned)
+    arr = np.zeros((4, 4, 4), dtype=np.uint8)
+    arr[..., 0] = 30
+    arr[..., 1] = 60
+    arr[..., 2] = 90
+    arr[..., 3] = 255  # alpha ignored
+    out = pp.normalize_image(arr, data_max_norm=True, dtype_max=255)
+    assert out.ndim == 2
+    np.testing.assert_allclose(out, np.full((4, 4), 60 / 255), rtol=1e-5)
+
+
+def test_normalize_squeezes_single_channel_axis():
+    # (H, W, 1) -> (H, W)
+    arr = np.full((4, 4, 1), 128, dtype=np.uint8)
+    out = pp.normalize_image(arr, data_max_norm=True, dtype_max=255)
+    assert out.shape == (4, 4)
+    np.testing.assert_allclose(out, np.full((4, 4), 128 / 255), rtol=1e-5)
+
+
+def test_normalize_percentile_constant_image_gives_zeros():
+    # hi == lo guard: constant image -> all zeros, no division by zero
+    arr = np.full((8, 8), 1000, dtype=np.uint16)
+    out = pp.normalize_image(arr, data_max_norm=False)
+    np.testing.assert_array_equal(out, np.zeros((8, 8), dtype=np.float32))

@@ -121,3 +121,34 @@ def test_segment_normalizes_raw_uint8():
     assert mask.shape == (64, 64)
     assert mask[15, 15] == 1
     assert mask[0, 0] == 0
+
+
+def test_invert_before_padding_keeps_pad_zero():
+    """Deliberate deviation from runDJLModel (which inverted AFTER padding,
+    making the pad region 1.0): ssp mirrors runOpenCVModel — invert first, so
+    zero padding stays zero. This test pins that contract."""
+    sess = FakeSession()
+    model = GelGenieONNX(session=sess)
+    img = _bright_square(100, 50)  # 1.0 at [20:40, 10:25], else 0.0
+    model.predict_mask(img, invert=True)
+    fed = sess.last_input[0, 0]  # (128, 64); pads: top=14, left=7
+    # pad region stays 0.0 even though invert is on
+    assert fed[0, 0] == 0.0
+    assert fed[-1, -1] == 0.0
+    assert fed[:14, :].max() == 0.0
+    assert fed[:, :7].max() == 0.0
+    # image region is inverted: bright band -> 0, dark surround -> 1
+    assert fed[14 + 30, 7 + 15] == 0.0
+    assert fed[14 + 0, 7 + 0] == 1.0
+
+
+def test_infer_padding_is_removed_from_output():
+    # output crop correctness for asymmetric padding (odd size)
+    sess = FakeSession()
+    model = GelGenieONNX(session=sess)
+    img = np.zeros((101, 53), dtype=np.float32)
+    img[50, 25] = 1.0
+    mask = model.predict_mask(img)
+    assert mask.shape == (101, 53)
+    assert mask[50, 25] == 1
+    assert mask.sum() == 1

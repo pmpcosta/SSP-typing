@@ -144,3 +144,29 @@ def test_cli_segment_missing_model_errors(tmp_path):
         ["segment", str(img_path), "-m", str(tmp_path / "nope.onnx"), "-o", str(tmp_path / "o")],
     )
     assert result.exit_code != 0
+
+
+def test_cli_segment_malformed_lane_edges_is_clean_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_mod, "GelGenieONNX", _fake_model_factory)
+    img_path = tmp_path / "gel.png"
+    _write_synth_gel(str(img_path))
+    model_path = tmp_path / "model.onnx"
+    model_path.write_bytes(b"x")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["segment", str(img_path), "-m", str(model_path), "-o", str(tmp_path / "o"),
+         "--lane-edges", "abc,48"],
+    )
+    assert result.exit_code != 0
+    assert "lane-edges" in result.output
+    # must be a clean click error, not a raw traceback
+    assert "Traceback" not in result.output
+
+
+def test_infer_dtype_max():
+    from ssp.cli import _infer_dtype_max
+    assert _infer_dtype_max(np.zeros((2, 2), dtype=np.uint8)) == 255.0
+    assert _infer_dtype_max(np.zeros((2, 2), dtype=np.uint16)) == 65535.0
+    assert _infer_dtype_max(np.zeros((2, 2), dtype=np.float32)) == 1.0
+    assert _infer_dtype_max(np.zeros((2, 2), dtype=np.float64)) == 1.0

@@ -24,6 +24,17 @@ setup(
     version="1.0.0",
     url="https://github.com/mattaq31/GelGenie/",
     packages=find_packages(),
+    extras_require={
+        # lightweight standalone segmentation runtime (no torch / no QuPath)
+        "ssp": [
+            "numpy>=1.21",
+            "scipy>=1.7",
+            "scikit-image>=0.19",
+            "imageio>=2.19",
+            "onnxruntime>=1.16",
+            "rich-click>=1.6",
+        ],
+    },
     entry_points='''
     [console_scripts]
     gelseg_train=gelgenie.segmentation.routine_training:segmentation_network_trainer

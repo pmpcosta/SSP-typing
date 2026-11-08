@@ -17,8 +17,11 @@ Binary segmentation mask -> discrete gel bands -> lanes.
 
 ``mask_to_bands`` mirrors the QuPath extension's ``ModelRunner.findSplitROIs``:
 connected-component labelling (8-connectivity, threshold 0.5) turns the binary
-mask into individual band objects. Bands are reported left-to-right, top-to-
-bottom, matching ``BandSorter`` / ``CentroidCompareX`` ordering.
+mask into individual band objects. Bands are reported in a global
+left-to-right, top-to-bottom centroid order. (The extension's ``BandSorter``
+instead groups bands into lanes by bounding-box x-overlap and sorts by y
+within each lane; since lane assignment happens downstream here, the global
+order is sufficient and deterministic.)
 
 Lane assignment is intentionally simple and deterministic (one band per lane is
 the norm for SSP gels): either supply explicit lane boundaries
@@ -41,6 +44,8 @@ from skimage.measure import label, regionprops
 class Band:
     """A single connected gel band."""
 
+    RESERVED_KEYS = ("id", "area", "centroid_y", "centroid_x", "bbox", "lane")
+
     id: int
     area: int
     centroid_y: float
@@ -50,6 +55,11 @@ class Band:
     extra: Dict = field(default_factory=dict)
 
     def to_dict(self) -> Dict:
+        collisions = set(self.extra) & set(self.RESERVED_KEYS)
+        if collisions:
+            raise ValueError(
+                f"extra keys collide with reserved Band fields: {sorted(collisions)}"
+            )
         return {
             "id": self.id,
             "area": int(self.area),

@@ -16,7 +16,10 @@
 Image preprocessing for standalone segmentation.
 
 Ports the transforms the QuPath extension applies before running a GelGenie
-model, so results match bit-for-bit:
+model. Two deliberate deviations from the extension's DJL/TorchScript path
+keep this pipeline float-exact rather than bit-identical with QuPath (both
+documented in :mod:`ssp.inference`): invert is applied before padding, and
+normalized images are not quantized to 8-bit.
 
 * ``get_individual_padding`` / ``pad_to_divisible`` mirror
   ``dataloaders.ImageMaskDataset.get_individual_padding`` (the Python original
@@ -103,13 +106,22 @@ def normalize_image(
     """Normalize a raw image to float32 in [0, 1].
 
     Port of ``ModelRunner.convertAndNormalizeNonStandardImage``:
-      * RGB (``(H, W, C)`` with C > 1) inputs are averaged across channels.
+      * ``(H, W, 1)`` inputs are squeezed to ``(H, W)``.
+      * RGB inputs are averaged across channels; for RGBA the alpha channel is
+        dropped and the first three averaged (QuPath only ever reads RGB, so
+        alpha handling is an ssp-specific choice).
       * ``data_max_norm=True`` divides by ``dtype_max`` (255 for 8-bit, 65535
-        for 16-bit) - the QuPath default.
+        for 16-bit, 1.0 for float) - the QuPath default.
       * ``data_max_norm=False`` applies a 0.1/99.9 percentile stretch and
-        shifts to [0, 1] (used when datatype max would squash small values).
+        shift; like the Java original the result is NOT clipped and can
+        slightly exceed [0, 1] at the extremes. A constant image (hi == lo)
+        yields all zeros instead of dividing by zero.
     """
     arr = np.asarray(img)
+
+    # squeeze a trailing singleton channel: (H, W, 1) -> (H, W)
+    if arr.ndim == 3 and arr.shape[-1] == 1:
+        arr = arr[..., 0]
 
     # average RGB(A) channels into a single grayscale plane
     if arr.ndim == 3 and arr.shape[-1] in (3, 4):

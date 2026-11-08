@@ -91,3 +91,21 @@ def test_cluster_lanes_by_gap():
 
 def test_cluster_lanes_by_gap_empty():
     assert cluster_lanes_by_gap([], gap_threshold=10) == []
+
+
+def test_assign_lanes_by_edges_boundary_goes_to_upper_lane():
+    # a band whose centroid sits exactly on an edge belongs to the lane to
+    # the right (searchsorted side="right")
+    m = np.zeros((20, 40), dtype=np.uint8)
+    m[5:10, 18:23] = 1  # centroid_x == 20.0
+    bands = mask_to_bands(m)
+    assert bands[0].centroid_x == pytest.approx(20.0)
+    assign_lanes_by_edges(bands, [20])
+    assert bands[0].lane == 1
+
+
+def test_band_to_dict_rejects_reserved_key_collision():
+    b = Band(id=0, area=5, centroid_y=1.0, centroid_x=2.0, bbox=(0, 0, 2, 3),
+             extra={"id": 99})
+    with pytest.raises(ValueError):
+        b.to_dict()

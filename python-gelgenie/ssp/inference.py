@@ -24,6 +24,16 @@ Mirrors the QuPath extension's ``ModelRunner.runDJLModel`` preprocessing and
 The published GelGenie ONNX checkpoints have dynamic ``height``/``width`` axes,
 so a single padded forward pass replaces the OpenCV 1024x1024 tiling path.
 
+Deliberate deviations from ``runDJLModel`` (both follow the extension's ONNX
+path ``runOpenCVModel`` instead, and are pinned by tests):
+
+* Invert is applied BEFORE padding, so zero padding stays zero. The DJL
+  transform order (pad, then ``ImageInvert``) turned the pad region into 1.0 —
+  an artifact of DJL's pipeline construction, not a modeling choice.
+* Normalized images are fed as float32 without the DJL path's 8-bit
+  quantization step; that quantization existed only because DJL's ``Image``
+  class requires 8-bit data. ``runOpenCVModel`` likewise stays float.
+
 Model output is raw 2-class logits ``(B, 2, H, W)``; argmax over the class axis
 gives the per-pixel label (0 = background, 1 = gel band). Ties keep class 0,
 matching the strict ``>`` comparison in ``GelSegmentationTranslator``.
