@@ -54,6 +54,16 @@ class TrayLane:
     specificities: str
     comment: str = ""
 
+    def __post_init__(self) -> None:
+        # guard the bp-calibration math (log/division) against bad sheet data
+        if self.control_bp <= 0:
+            raise ValueError(
+                f"mix {self.mix}: control_bp must be > 0, got {self.control_bp}")
+        bad = [bp for bp in self.product_bp if bp <= 0]
+        if bad:
+            raise ValueError(
+                f"mix {self.mix}: product sizes must be > 0, got {bad}")
+
     def to_dict(self) -> Dict:
         return asdict(self)
 
@@ -135,11 +145,24 @@ def load_tray_xlsx(path: Union[str, Path], name: Optional[str] = None,
         a, b, c, d, e, f = (cell.value for cell in row)
         if isinstance(a, str):
             head = a.strip()
+            mapped = None
             for prefix, loc in _SECTION_LOCUS.items():
                 if head.upper().startswith(prefix):
-                    locus = loc
+                    mapped = loc
+            if mapped is not None:
+                locus = mapped
+            elif head.upper().startswith("HLA-") or "*" in head:
+                # a section header we don't support (e.g. HLA-DRB1*): fail
+                # loudly instead of silently inheriting the previous locus
+                raise ValueError(
+                    f"unsupported tray section header {head!r} in {path}; "
+                    "this loader supports HLA-A*, HLA-B*, HLA-C*")
             continue
-        if isinstance(a, (int, float)) and locus is not None and int(a) >= 1:
+        if isinstance(a, (int, float)):
+            if locus is None:
+                raise ValueError(
+                    f"row with mix number {int(a)} appears before any HLA "
+                    f"section header in {path}")
             rows.append({
                 "mix": int(a), "locus": locus,
                 "product_bp": _parse_product_sizes(b),

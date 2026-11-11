@@ -110,3 +110,67 @@ def test_flc_json_roundtrip(tmp_path):
     p = tmp_path / 'flc.json'
     t.save_json(p)
     assert Tray.load_json(p) == t
+
+
+# ---------- hardening: malformed sheets and bad bp values ----------
+
+def test_lane_rejects_nonpositive_bp():
+    with pytest.raises(ValueError):
+        TrayLane(mix=1, locus='A', product_bp=[500], control_bp=0,
+                 serotypes='', specificities='A*01:01')
+    with pytest.raises(ValueError):
+        TrayLane(mix=1, locus='A', product_bp=[500, 0], control_bp=256,
+                 serotypes='', specificities='A*01:01')
+
+
+def _write_xlsx(path, rows):
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for r in rows:
+        ws.append(r)
+    wb.save(path)
+
+
+def test_loader_unknown_section_raises(tmp_path):
+    p = tmp_path / 'bad.xlsx'
+    _write_xlsx(p, [
+        ['HLA-A*'], ['Mix (lane)', 'size', 'ctrl', 'ser', 'spec', 'cmt'],
+        [1, 500, 256, '1', 'A*01:01'],
+        ['HLA-DRB1*'],
+        [29, 500, 256, '1', 'DRB1*03:01'],
+    ])
+    with pytest.raises(ValueError, match='unsupported tray section'):
+        load_tray_xlsx(p)
+
+
+def test_loader_row_before_section_raises(tmp_path):
+    p = tmp_path / 'bad.xlsx'
+    _write_xlsx(p, [[1, 500, 256, '1', 'A*01:01']])
+    with pytest.raises(ValueError, match='before any HLA'):
+        load_tray_xlsx(p)
+
+
+def test_loader_duplicate_mix_raises(tmp_path):
+    p = tmp_path / 'bad.xlsx'
+    _write_xlsx(p, [
+        ['HLA-A*'],
+        [1, 500, 256, '1', 'A*01:01'],
+        [1, 600, 256, '2', 'A*02:01'],
+    ])
+    with pytest.raises(ValueError, match='duplicate'):
+        load_tray_xlsx(p)
+
+
+def test_loader_empty_sheet_raises(tmp_path):
+    p = tmp_path / 'empty.xlsx'
+    _write_xlsx(p, [['HLA-A*'], ['Mix (lane)']])
+    with pytest.raises(ValueError, match='no tray rows'):
+        load_tray_xlsx(p)
+
+
+def test_loader_bad_bp_value_raises(tmp_path):
+    p = tmp_path / 'bad.xlsx'
+    _write_xlsx(p, [['HLA-A*'], [1, 500, 0, '1', 'A*01:01']])
+    with pytest.raises(ValueError, match='control_bp'):
+        load_tray_xlsx(p)

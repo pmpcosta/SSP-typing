@@ -79,6 +79,19 @@ def test_cluster_lanes_unrepairable_mismatch_raises():
         cluster_lanes(bands, expected_count=9, gap=20.0)
 
 
+def test_cluster_lanes_too_many_raises():
+    bands = [_band(10, 100), _band(60, 100), _band(110, 100)]
+    with pytest.raises(ValueError, match='found 3 lane clusters'):
+        cluster_lanes(bands, expected_count=2, gap=20.0)
+
+
+def test_cluster_lanes_single_cluster_expected_more_raises():
+    # one merged blob, no pitch information -> clean ValueError (no nan maths)
+    bands = [_band(10, 100), _band(12, 300)]
+    with pytest.raises(ValueError, match='single lane cluster'):
+        cluster_lanes(bands, expected_count=4, gap=20.0)
+
+
 # ---------- estimate_bp ----------
 
 def test_estimate_bp_math():
@@ -166,6 +179,27 @@ def test_analyse_gel_default_slope_single_control_size():
     bands, _ = _synth_lanes(5)
     ga = analyse_gel(bands, _tray(5))
     assert ga.slope_b == DEFAULT_BP_SLOPE
+    # the fallback must be surfaced to the user
+    assert any('calibrat' in w for w in ga.warnings)
+
+
+def test_analyse_gel_slope_override():
+    bands, _ = _synth_lanes(5)
+    ga = analyse_gel(bands, _tray(5), slope_b=50.0)
+    assert ga.slope_b == 50.0
+    assert not any('calibrat' in w for w in ga.warnings)  # explicit override: no warning
+
+
+def test_analyse_gel_nonconsecutive_mixes_raise():
+    tray = Tray(name='t', lanes=[
+        TrayLane(mix=1, locus='A', product_bp=[500], control_bp=256,
+                 serotypes='', specificities='A*01:01'),
+        TrayLane(mix=3, locus='A', product_bp=[500], control_bp=256,
+                 serotypes='', specificities='A*03:01'),
+    ])
+    bands, _ = _synth_lanes(2)
+    with pytest.raises(ValueError, match='consecutive'):
+        analyse_gel(bands, tray)
 
 
 def test_analyse_gel_accepts_dicts():

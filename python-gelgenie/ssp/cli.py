@@ -178,7 +178,8 @@ def load_tray(path: str) -> Tray:
 @click.option("--dtype-max", type=float, default=None,
               help="Datatype max for normalization (default: inferred from image dtype).")
 @click.option("--min-area", type=int, default=5, show_default=True,
-              help="Discard bands with fewer pixels than this.")
+              help="Discard bands with fewer pixels than this (default 5 for "
+                   "typing to suppress speckle; `segment` defaults to 1 for raw fidelity).")
 @click.option("--lane-gap", type=float, default=20.0, show_default=True,
               help="X-gap (px) separating lane clusters.")
 @click.option("--slope-b", type=float, default=None,
@@ -196,14 +197,20 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
     if dtype_max is None:
         dtype_max = _infer_dtype_max(raw)
 
-    tray_obj = load_tray(tray)
+    try:
+        tray_obj = load_tray(tray)
+    except ValueError as e:
+        raise click.ClickException(str(e))
     model_obj = GelGenieONNX(model_path=model)
     mask, bands = segment_image(
         raw, model_obj, invert=invert,
         data_max_norm=not percentile_norm, dtype_max=dtype_max, min_area=min_area,
     )
-    ga = analyse_gel(bands, tray_obj, lane_gap=lane_gap, slope_b=slope_b,
-                     match_tol=match_tol)
+    try:
+        ga = analyse_gel(bands, tray_obj, lane_gap=lane_gap, slope_b=slope_b,
+                         match_tol=match_tol)
+    except ValueError as e:
+        raise click.ClickException(str(e))
     result = type_sample(ga, tray_obj)
 
     os.makedirs(output, exist_ok=True)
@@ -231,7 +238,7 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
              ""]
     lines.append(result.summary_text())
     lines.append("")
-    lines.append("per-lane calls (non-negative lanes only):")
+    lines.append("per-lane calls (positive, invalid, and anomalous lanes):")
     for lane in ga.lanes:
         if not lane.valid:
             lines.append(f"  mix {lane.mix:3d}: INVALID (no control band)")

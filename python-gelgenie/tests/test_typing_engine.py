@@ -119,6 +119,20 @@ def test_no_positives_warns():
     assert any('no positive' in w.lower() for w in res.loci['A'].warnings + res.warnings)
 
 
+def test_all_invalid_locus_is_no_call():
+    # every lane lacks a control -> explicit no-call, NOT a misleading score 0
+    tray = _tray({1: 'A*01:01', 2: 'A*02:01', 3: 'A*01:01, A*02:01'})
+    ga = _ga(positives=[], negatives=[], invalid=[1, 2, 3])
+    res = type_sample(ga, tray)
+    a = res.loci['A']
+    assert a.score is None
+    assert a.best_pairs == []
+    assert a.invalid == [1, 2, 3]
+    assert a.genotype_text() == 'no call'
+    assert any('no valid lanes' in w for w in a.warnings)
+    assert a.to_dict()['score'] is None  # JSON consumers see null, not 0
+
+
 def test_candidates_exclude_other_locus_tokens():
     # C-section lane mentioning an A allele (like FLC mix 82): the A*26:04
     # token must not become a C-locus candidate

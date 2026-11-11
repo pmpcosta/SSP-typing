@@ -56,7 +56,7 @@ def test_parse_apostrophe_typo():
 
 
 def test_parse_missing_colon_typo():
-    # sheet lane 36: 'B*5201-02' means B*52:01/02
+    # mix 30 (cell E36) reads 'B*51:01-05/08, B*5201-02'; the typo means B*52:01/02
     s = parse_specificities('B*5201-02')
     assert s.alleles == {'B*52:01', 'B*52:02'}
 
@@ -83,6 +83,28 @@ def test_parse_all_except():
     assert 'A*02:01' in s.all_except and 'A*02:19' in s.all_except
     assert 'A*23:01' in s.all_except
     assert len(s.all_except) == 20
+
+
+def test_parse_class2_locus():
+    s = parse_specificities('DRB1*03:01, DQB1*02:01')
+    assert s.alleles == {'DRB1*03:01', 'DQB1*02:01'}
+
+
+def test_parse_lowercase_normalized():
+    s = parse_specificities('b*52:01')
+    assert s.alleles == {'B*52:01'}
+
+
+def test_parse_bare_all_covers_everything():
+    s = parse_specificities('All')
+    assert s.all_except == frozenset()
+    assert s.contains('A*01:01')
+    assert s.contains('C*07:01')
+
+
+def test_parse_all_except_unparseable_raises():
+    with pytest.raises(ValueError):
+        parse_specificities('All, except something weird')
 
 
 def test_family_of():

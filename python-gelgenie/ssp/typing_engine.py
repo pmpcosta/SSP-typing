@@ -180,6 +180,16 @@ def type_sample(ga: GelAnalysis, tray: Tray) -> TypingResult:
         warnings: List[str] = []
         if lane_by_mix.keys() and any(m not in lane_by_mix for m in mixes):
             warnings.append(f"locus {locus}: some tray lanes missing from gel analysis")
+        if not valid:
+            # nothing to score against: every pair would tie at 0, which would
+            # read as a perfect match — report an explicit no-call instead
+            warnings.append(f"locus {locus}: no valid lanes (no control bands); no call")
+            results[locus] = LocusResult(
+                locus=locus, positives=[], negatives=[], invalid=invalid,
+                candidates=[], best_pairs=[], score=None, allele_options=None,
+                warnings=warnings)
+            all_warnings.extend(warnings)
+            continue
         if not positives:
             warnings.append(f"locus {locus}: no positive lanes; typing unreliable")
         if not candidates:

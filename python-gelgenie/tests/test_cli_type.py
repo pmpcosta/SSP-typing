@@ -136,6 +136,30 @@ def test_cli_type_xlsx_tray_accepted(tmp_path, monkeypatch):
     assert result.exit_code != 0  # click existence check
 
 
+def test_cli_type_bad_tray_clean_error(tmp_path, monkeypatch):
+    # non-consecutive mixes must surface as a clean click error, not a traceback
+    monkeypatch.setattr(cli_mod, 'GelGenieONNX', _fake_model_factory)
+    img = tmp_path / 'gel.png'
+    _synth_ssp_image(img)
+    bad_tray = tmp_path / 'bad.json'
+    Tray(name='bad', lanes=[
+        TrayLane(mix=1, locus='A', product_bp=[330], control_bp=256,
+                 serotypes='1', specificities='A*01:01'),
+        TrayLane(mix=3, locus='A', product_bp=[330], control_bp=256,
+                 serotypes='3', specificities='A*03:01'),
+    ]).save_json(bad_tray)
+    model_path = tmp_path / 'model.onnx'
+    model_path.write_bytes(b'x')
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        'type', str(img), '--tray', str(bad_tray), '-m', str(model_path),
+        '-o', str(tmp_path / 'o'),
+    ])
+    assert result.exit_code != 0
+    assert 'consecutive' in result.output
+    assert 'Traceback' not in result.output
+
+
 @requires_full
 def test_cli_type_real_gel_and_sheet(tmp_path):
     out = tmp_path / 'out'
@@ -157,8 +181,19 @@ def test_cli_type_real_gel_and_sheet(tmp_path):
     b = typing['loci']['B']
     assert b['positives'] == [40, 41, 63, 70]
     assert b['invalid'] == [39, 49]
-    assert any('B*42:01' in pair for pair in b['best_pairs'])
+    assert b['score'] == 0
+    # exact ambiguity: 12 indistinguishable B*15 alleles x B*42:01
+    assert b['allele_options'][1] == ['B*42:01']
+    assert set(b['allele_options'][0]) == {
+        f'B*15:{n:02d}' for n in (1, 4, 12, 19, 20, 25, 26, 27, 32, 33, 34, 35)}
 
     c = typing['loci']['C']
     assert c['positives'] == [76, 84]
     assert c['invalid'] == [90, 96]
+    assert c['score'] == 0
+    # exact pair set: {C*04:01-03, C*18:01} x {C*08:01-03} (lane 96 invalid,
+    # so C*04 vs C*18 stays unresolved)
+    expected_c = {tuple(sorted((x, y)))
+                  for x in ('C*04:01', 'C*04:02', 'C*04:03', 'C*18:01')
+                  for y in ('C*08:01', 'C*08:02', 'C*08:03')}
+    assert set(map(tuple, c['best_pairs'])) == expected_c

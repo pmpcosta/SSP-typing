@@ -16,8 +16,10 @@
 Parsing of tray-sheet ``Specificities`` cells into normalized allele tokens.
 
 Token grammar: ``<LOCUS>*<family>[:<allele>]`` where LOCUS is 1-3 uppercase
-letters (A, B, C, DRB1...), family is 1-3 digits zero-padded to 2, allele is
-2-3 digits. A token without ``:<allele>`` is a *family token* (e.g. ``B*13``
+letters plus an optional digit (A, B, C, DRB1, DQB1...), family is exactly
+2 digits (all HLA families are; a 3-digit first field is invalid input and
+may misparse), allele is 2-3 digits. Input is case-normalized to uppercase.
+A token without ``:<allele>`` is a *family token* (e.g. ``B*13``
 from Bw4/Bw6 public-epitope lists), meaning "any allele of that family".
 
 Handles the real-world sheet quirks catalogued from FLClasseI.xlsx:
@@ -41,10 +43,11 @@ from dataclasses import dataclass
 from typing import List, Optional, Set
 
 _ALL_EXCEPT = re.compile(r"^\s*all\b.*?\bexcept\b", re.IGNORECASE | re.DOTALL)
+_BARE_ALL = re.compile(r"^\s*all\s*$", re.IGNORECASE)
 # find every locus*family[:allele-expr] pattern, ignoring surrounding prose
 # (e.g. mix 92: 'C*15:05, other C*15 (weak band)')
 _GROUP = re.compile(
-    r"([A-Z]{1,3})\*'?\s*(\d{2})(?::([0-9A-Za-z/\-]+)|([0-9][0-9A-Za-z/\-]*))?"
+    r"([A-Z]{1,3}[0-9]?)\*'?\s*(\d{2})(?::([0-9A-Za-z/\-]+)|([0-9][0-9A-Za-z/\-]*))?"
 )
 _NUMBER = re.compile(r"^(\d{1,3})[A-Za-z]?$")  # trailing expression suffix stripped
 
@@ -96,17 +99,25 @@ def parse_specificities(text: str) -> "SpecificitySet":
 
     Returns a :class:`SpecificitySet` with either ``alleles`` (explicit token
     set) or ``all_except`` (``All, except ...`` cells: everything minus the
-    expanded exception tokens). Prose around allele groups (e.g. ``(weak
+    expanded exception tokens).    Prose around allele groups (e.g. ``(weak
     band)``, ``other C*15``) is ignored except that bare ``locus*family``
-    mentions still yield family tokens.
+    mentions still yield family tokens. ``All`` alone covers everything;
+    ``All, except <list>`` with an unparseable exception list raises
+    ``ValueError`` rather than silently covering everything.
     """
-    text = (text or "").strip()
+    text = (text or "").strip().upper()
     if not text:
         return SpecificitySet()
+
+    if _BARE_ALL.match(text):
+        return SpecificitySet(all_except=frozenset())
 
     m = _ALL_EXCEPT.match(text)
     if m:
         exc = _find_groups(text[m.end():])
+        if not exc:
+            raise ValueError(
+                f"'All, except ...' cell has no parseable allele list: {text!r}")
         return SpecificitySet(all_except=frozenset(exc))
 
     return SpecificitySet(alleles=frozenset(_find_groups(text)))

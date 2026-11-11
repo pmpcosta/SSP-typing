@@ -107,6 +107,10 @@ def cluster_lanes(
             "consider raising --min-area or checking lane splitting"
         )
     # too few clusters: try inserting empty lanes at missing-lane-signature gaps
+    if len(clusters) < 2:
+        raise ValueError(
+            f"found a single lane cluster but expected {expected_count}; "
+            "cannot infer lane pitch (segmentation may have merged lanes)")
     centers = [float(np.mean([b.centroid_x for b in c])) for c in clusters]
     spacings = np.diff(centers)
     median_pitch = float(np.median(spacings))
@@ -239,8 +243,8 @@ def _fit_controls(
     lane_mixes: List[int],
     ctrl_bps: List[int],
     centers: List[float],
-) -> Tuple[Dict[int, Optional[Band]], float, List[Tuple[int, int]]]:
-    """Pick control bands per lane; returns (picks, slope_b, panels)."""
+) -> Tuple[Dict[int, Optional[Band]], float, List[Tuple[int, int]], bool]:
+    """Pick control bands per lane; returns (picks, slope_b, panels, calibrated)."""
     panels = _panel_ranges(centers)
     picks: Dict[int, Optional[Band]] = {}
 
@@ -290,7 +294,7 @@ def _fit_controls(
             if bp_hi > bp_lo:
                 slope_estimates.append((y_lo - y_hi) / (math.log(bp_hi) - math.log(bp_lo)))
     slope_b = float(np.mean(slope_estimates)) if slope_estimates else DEFAULT_BP_SLOPE
-    return picks, slope_b, panels
+    return picks, slope_b, panels, bool(slope_estimates)
 
 
 def analyse_gel(
@@ -323,15 +327,17 @@ def analyse_gel(
             centers.append(np.mean([v for v in (prev, nxt) if v is not None])
                            if (prev is not None or nxt is not None) else 0.0)
 
-    picks, slope_auto, panels = _fit_controls(
+    picks, slope_auto, panels, calibrated = _fit_controls(
         lane_bands, mixes, [ctrl_bps_all[m] for m in mixes], centers)
     slope = float(slope_b) if slope_b is not None else slope_auto
     panels_mix = [(mixes[p0], mixes[p1]) for p0, p1 in panels]
 
     lanes_out: List[LaneCall] = []
     warnings: List[str] = []
-    if slope_b is None and not panels:
-        warnings.append("no slope calibration possible; using default")
+    if slope_b is None and not calibrated:
+        warnings.append(
+            f"bp slope not calibratable (no panel hosts two control sizes); "
+            f"using default {DEFAULT_BP_SLOPE} px/ln(bp)")
     for i, mix in enumerate(mixes):
         ctrl = picks.get(i)
         ctrl_bp = ctrl_bps_all[mix]
