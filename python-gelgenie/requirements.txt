@@ -22,3 +22,4 @@ torchshow>=0.4.2
 segmentation-models-pytorch>=0.3.0
 monai>=1.2.0
 onnxruntime>=1.16.0
+openpyxl>=3.1

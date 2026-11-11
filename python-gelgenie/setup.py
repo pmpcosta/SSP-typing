@@ -33,6 +33,7 @@ setup(
             "imageio>=2.19",
             "onnxruntime>=1.16",
             "rich-click>=1.6",
+            "openpyxl>=3.1",
         ],
     },
     entry_points='''
