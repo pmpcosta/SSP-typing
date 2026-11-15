@@ -82,17 +82,20 @@ def fetch_registry(timeout: float = 30.0) -> Dict[str, ModelInfo]:
     except Exception as e:
         raise ModelFetchError(f"could not fetch model registry: {e}") from e
     out: Dict[str, ModelInfo] = {}
-    for name, m in (raw.get("models") or {}).items():
-        if not m.get("onnx_file") or not m.get("hf_repo_id"):
-            continue  # no ONNX export -> not usable by the standalone runtime
-        out[name] = ModelInfo(
-            name=name,
-            abbrv=m.get("abbrvName") or name,
-            description=m.get("description") or "",
-            repo_id=m["hf_repo_id"],
-            revision=m.get("hf_revision") or "main",
-            onnx_file=m["onnx_file"],
-        )
+    try:
+        for name, m in (raw.get("models") or {}).items():
+            if not m.get("onnx_file") or not m.get("hf_repo_id"):
+                continue  # no ONNX export -> not usable by the standalone runtime
+            out[name] = ModelInfo(
+                name=name,
+                abbrv=m.get("abbrvName") or name,
+                description=m.get("description") or "",
+                repo_id=m["hf_repo_id"],
+                revision=m.get("hf_revision") or "main",
+                onnx_file=m["onnx_file"],
+            )
+    except Exception as e:
+        raise ModelFetchError(f"could not parse model registry: {e}") from e
     if not out:
         raise ModelFetchError("model registry contained no usable ONNX models")
     return out
@@ -126,6 +129,9 @@ def download_model(
                     done += len(chunk)
                     if progress is not None:
                         progress(done, total)
+            if total is not None and done != total:
+                raise IOError(
+                    f"truncated download: got {done} of {total} bytes")
     except Exception as e:
         part.unlink(missing_ok=True)
         raise ModelFetchError(f"download failed for {info.name!r}: {e}") from e

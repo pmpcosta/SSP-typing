@@ -364,11 +364,11 @@ def serve(host, port, model, data_dir, no_browser) -> None:
         try:
             resolved = _download_with_progress(model_zoo.DEFAULT_MODEL_NAME)
         except model_zoo.ModelFetchError as e2:
+            dest = model_zoo.cache_dir() / model_zoo.DEFAULT_MODEL_FILE
             raise click.ClickException(
                 f"could not download model: {e2}\n\n"
                 "Manual download:\n"
-                "  mkdir -p ~/.cache/ssptyping/models && curl -sL -o "
-                "~/.cache/ssptyping/models/unet_dec_21_epoch_579.onnx \\\n"
+                f"  mkdir -p {dest.parent} && curl -sL -o {dest} \\\n"
                 "    https://huggingface.co/mattaq/GelGenie-Universal-Dec-2023/"
                 "resolve/main/onnx_checkpoints/unet_dec_21_epoch_579.onnx")
     model_path = str(resolved)

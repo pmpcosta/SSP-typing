@@ -1,0 +1,12 @@
+# Keep the Docker build context small and prevent dev/vendor artifacts from
+# ever reaching the image (build context = python-gelgenie/).
+.venv/
+dist/
+build/
+gelgenie/
+tests/
+*.egg-info/
+**/__pycache__/
+*.onnx
+*.pt
+*.pth

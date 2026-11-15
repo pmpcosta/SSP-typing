@@ -34,6 +34,7 @@ setup(
             "numpy>=1.21",
             "scikit-image>=0.19",
             "imageio>=2.19",
+            "pillow>=9.1",
             "onnxruntime>=1.16",
             "rich-click>=1.6",
             "openpyxl>=3.1",

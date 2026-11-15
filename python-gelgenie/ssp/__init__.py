@@ -30,4 +30,4 @@ Submodules:
     ssp.cli              - `ssp-typing` command line entry point
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

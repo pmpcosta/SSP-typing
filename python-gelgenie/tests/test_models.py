@@ -95,6 +95,22 @@ def test_fetch_registry_network_error(monkeypatch):
         fetch_registry()
 
 
+def test_fetch_registry_malformed_shapes(monkeypatch):
+    """Garbage registries must raise ModelFetchError, never AttributeError."""
+    bad_shapes = [
+        [],                                          # top level not a dict
+        {"models": []},                              # models not a dict
+        {"models": {"x": "not-a-dict"}},             # entry not a dict
+        {"models": {"x": {"onnx_file": "a.onnx"}}},  # missing hf_repo_id -> empty
+    ]
+    for bad in bad_shapes:
+        data = json.dumps(bad).encode()
+        monkeypatch.setattr(urllib.request, "urlopen",
+                            lambda *a, **k: _FakeHTTP(data))
+        with pytest.raises(ModelFetchError):
+            fetch_registry()
+
+
 # ---------- download ----------
 
 def test_download_model_atomic_and_progress(monkeypatch, tmp_path):
@@ -119,6 +135,17 @@ def test_download_model_failure_cleans_partial(monkeypatch, tmp_path):
     with pytest.raises(ModelFetchError, match="download failed"):
         download_model(info, dest_dir=tmp_path)
     assert not list(tmp_path.iterdir())   # no .part, no truncated final
+
+
+def test_download_model_truncated_stream_rejected(monkeypatch, tmp_path):
+    """Clean EOF before Content-Length must not os.replace a short file."""
+    resp = _FakeHTTP(b"short")
+    resp.headers = {"Content-Length": "99999"}   # lies about the body size
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: resp)
+    info = ModelInfo("n", "N", "d", "repo/id", "main", "model.onnx")
+    with pytest.raises(ModelFetchError, match="truncated"):
+        download_model(info, dest_dir=tmp_path)
+    assert not list(tmp_path.iterdir())
 
 
 # ---------- resolution ----------

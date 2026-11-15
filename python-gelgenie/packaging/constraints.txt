@@ -1,0 +1,39 @@
+# Pinned runtime deps for the Docker image (reproducible builds).
+# Generated 2026-11-15 from python-gelgenie/.venv (Python 3.12, linux x86_64)
+# via `uv pip freeze`, curated to the ssp runtime closure. Regenerate after
+# dependency bumps:
+#   uv pip freeze --python .venv/bin/python | grep -vE "@ file://|^-e"
+# Constraints only pin what pip actually installs; harmless if a line is unused.
+annotated-types==0.8.0
+anyio==4.16.0
+certifi==2026.10.23
+click==8.5.1
+et-xmlfile==2.0.0
+fastapi==0.163.0
+flatbuffers==25.12.19
+h11==0.16.0
+idna==3.20
+imageio==2.38.1
+lazy-loader==0.6
+markdown-it-py==4.2.0
+mdurl==0.1.2
+networkx==3.7
+numpy==2.5.4
+onnxruntime==1.31.1
+openpyxl==3.1.5
+packaging==26.3
+pillow==13.0.0
+protobuf==7.36.2
+pydantic==2.14.3
+pydantic-core==2.50.4
+pygments==2.21.0
+python-multipart==0.0.33
+rich==15.0.0
+rich-click==1.9.9
+scikit-image==0.26.0
+scipy==1.18.1
+starlette==1.10.0
+tifffile==2026.11.8
+typing-extensions==4.16.0
+typing-inspection==0.4.5
+uvicorn==0.54.0

@@ -32,6 +32,8 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+# ...except our committed PyInstaller spec (reproducible frozen builds)
+!python-gelgenie/packaging/*.spec
 
 # Installer logs
 pip-log.txt

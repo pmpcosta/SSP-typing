@@ -13,10 +13,12 @@
 # `serve` and cached in the models volume. Tray sheets are uploaded through
 # the web UI; nothing vendor-specific is baked into this image.
 
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
-# runtime deps only — mirrors setup.py extras_require['ssp'] + ['webapp']
-RUN pip install --no-cache-dir \
+# runtime deps only — mirrors setup.py extras_require['ssp'] + ['webapp'],
+# version-pinned via packaging/constraints.txt for reproducible builds
+COPY packaging/constraints.txt /tmp/constraints.txt
+RUN pip install --no-cache-dir -c /tmp/constraints.txt \
         "numpy>=1.21" \
         "scikit-image>=0.19" \
         "imageio>=2.19" \
