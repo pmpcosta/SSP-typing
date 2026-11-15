@@ -34,6 +34,12 @@ setup(
             "rich-click>=1.6",
             "openpyxl>=3.1",
         ],
+        # local interactive web app (Phase 3)
+        "webapp": [
+            "fastapi>=0.110",
+            "uvicorn>=0.29",
+            "python-multipart>=0.0.9",
+        ],
     },
     entry_points='''
     [console_scripts]

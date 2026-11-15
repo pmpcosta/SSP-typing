@@ -43,6 +43,7 @@ from ssp.bands import (
     mask_to_bands,
 )
 from ssp.inference import GelGenieONNX
+from ssp.report import build_report
 from ssp.trays import Tray, load_tray_xlsx
 from ssp.typing_engine import type_sample
 
@@ -233,31 +234,9 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
     with open(typing_path, "w") as f:
         json.dump(payload, f, indent=2)
 
-    lines = [f"SSP typing: {os.path.basename(image)} vs tray {tray_obj.name}",
-             f"calibrated slope: {ga.slope_b:.1f} px/ln(bp)   panels: {ga.panels}",
-             ""]
-    lines.append(result.summary_text())
-    lines.append("")
-    lines.append("per-lane calls (positive, invalid, and anomalous lanes):")
-    for lane in ga.lanes:
-        if not lane.valid:
-            lines.append(f"  mix {lane.mix:3d}: INVALID (no control band)")
-            continue
-        if not (lane.positive or any(c.kind in ("unexplained", "hmw") for c in lane.calls)):
-            continue
-        bits = []
-        for c in lane.calls:
-            if c.kind == "control":
-                continue
-            bp = f"{c.bp_est:.0f}bp" if c.bp_est is not None else "?bp"
-            extra = f"~{c.matched_bp}" if c.matched_bp else ""
-            bits.append(f"{c.band.centroid_y:.0f}px={bp}{extra} [{c.kind}]")
-        lines.append(f"  mix {lane.mix:3d}: {'; '.join(bits)}")
-    for w in ga.warnings:
-        lines.append(f"WARNING: {w}")
     report_path = os.path.join(output, "report.txt")
     with open(report_path, "w") as f:
-        f.write("\n".join(lines) + "\n")
+        f.write(build_report(os.path.basename(image), tray_obj.name, ga, result))
 
     click.echo(result.summary_text())
     click.echo(f"\n  mask   -> {mask_path}")
