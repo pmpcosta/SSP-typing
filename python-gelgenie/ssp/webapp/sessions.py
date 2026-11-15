@@ -38,7 +38,9 @@ given (bands, tray, params, edits).
 from __future__ import annotations
 
 import json
+import math
 import mimetypes
+import os
 import re
 import shutil
 import uuid
@@ -70,6 +72,17 @@ def _now() -> str:
 
 def _safe_stem(filename: str, fallback: str) -> str:
     return _SAFE.sub("_", Path(filename or "").stem) or fallback
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Crash-safe write: readers never see a torn file (write + os.replace)."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def _atomic_write_json(path: Path, obj, indent: Optional[int] = None) -> None:
+    _atomic_write_text(path, json.dumps(obj, indent=indent))
 
 
 @dataclass
@@ -119,7 +132,26 @@ class SessionStore:
             raise ValueError(f"could not parse tray file {filename!r}: {e}")
         finally:
             tmp.unlink(missing_ok=True)
-        tray.save_json(self.config.trays_dir / f"{stem}.json")
+        # never silently overwrite a different tray stored under the same
+        # name: identical content reuses the existing entry, different
+        # content is stored under a suffixed name
+        dest = self.config.trays_dir / f"{stem}.json"
+        payload = json.dumps(tray.to_dict(), indent=1)
+        if dest.exists() and dest.read_text() != payload:
+            reuse = None
+            for p in self.config.trays_dir.glob(f"{stem}-????.json"):
+                try:
+                    if p.read_text() == payload:
+                        reuse = p
+                        break
+                except OSError:
+                    continue
+            if reuse is not None:
+                dest, stem = reuse, reuse.stem
+            else:
+                stem = f"{stem}-{uuid.uuid4().hex[:4]}"
+                dest = self.config.trays_dir / f"{stem}.json"
+        _atomic_write_text(dest, payload)
         return stem, tray
 
     def list_trays(self) -> List[Dict]:
@@ -202,25 +234,28 @@ class SessionStore:
             shutil.rmtree(sdir, ignore_errors=True)
             raise ValueError(f"session failed: {e}")
         imageio.imwrite(str(sdir / "mask.png"), (mask * 255).astype(np.uint8))
-        with open(sdir / "bands.json", "w") as f:
-            json.dump([b.to_dict() for b in bands], f)
-        tray.save_json(sdir / "tray.json")
+        _atomic_write_json(sdir / "bands.json", [b.to_dict() for b in bands])
+        _atomic_write_text(sdir / "tray.json", json.dumps(tray.to_dict(), indent=1))
 
         meta = {
             "id": sid, "image_name": image_name, "image_file": image_file,
-            "image_media_type": mimetypes.guess_type(image_name or "")[0]
-                                or "application/octet-stream",
+            # allowlist: never serve attacker-chosen types like text/html
+            "image_media_type": self._image_media_type(image_name),
             "tray_name": tray.name, "tray_store_name": store_name,
             "created": _now(), "image": {"width": int(w), "height": int(h)},
             "params": params,
             "defaults": {"match_tol": self.config.default_match_tol,
                          "lane_gap": self.config.default_lane_gap},
         }
-        with open(sdir / "meta.json", "w") as f:
-            json.dump(meta, f, indent=1)
+        _atomic_write_json(sdir / "meta.json", meta, indent=1)
         self._write_edits(sdir, {"lane_overrides": [], "deleted_bands": [],
                                  "added_bands": []})
         return self._recompute(sid)
+
+    @staticmethod
+    def _image_media_type(name: str) -> str:
+        mt = mimetypes.guess_type(name or "")[0] or ""
+        return mt if mt.startswith("image/") else "application/octet-stream"
 
     def list_sessions(self) -> List[Dict]:
         out = []
@@ -240,10 +275,15 @@ class SessionStore:
 
     def load_state(self, sid: str) -> Dict:
         sdir = self._sdir(sid)
-        state_path = sdir / "state.json"
-        if not state_path.exists():
-            raise KeyError(sid)
-        return json.loads(state_path.read_text())
+        try:
+            return json.loads((sdir / "state.json").read_text())
+        except (OSError, ValueError):
+            # missing or corrupt state.json: rebuild from on-disk inputs
+            # (bands/tray/edits/meta are the source of truth)
+            try:
+                return self._recompute(sid)
+            except Exception:
+                raise KeyError(sid)
 
     def session_file(self, sid: str, name: str) -> Path:
         sdir = self._sdir(sid)
@@ -263,23 +303,24 @@ class SessionStore:
         tray = Tray.load_json(sdir / "tray.json")
         edits = self._validate_edits(body, tray)
 
-        old_edits = json.loads((sdir / "edits.json").read_text())
+        try:
+            old_edits = json.loads((sdir / "edits.json").read_text())
+        except (OSError, ValueError):
+            old_edits = {"lane_overrides": [], "deleted_bands": [], "added_bands": []}
         old_params = dict(meta["params"])
         if body.get("match_tol") is not None:
             meta["params"]["match_tol"] = float(body["match_tol"])
         if body.get("lane_gap") is not None:
             meta["params"]["lane_gap"] = float(body["lane_gap"])
         self._write_edits(sdir, edits)
-        with open(sdir / "meta.json", "w") as f:
-            json.dump(meta, f, indent=1)
+        _atomic_write_json(sdir / "meta.json", meta, indent=1)
         try:
             state = self._recompute(sid)
         except Exception:
             # roll back so a rejected edit never silently sticks
             self._write_edits(sdir, old_edits)
             meta["params"] = old_params
-            with open(sdir / "meta.json", "w") as f:
-                json.dump(meta, f, indent=1)
+            _atomic_write_json(sdir / "meta.json", meta, indent=1)
             raise
         with open(sdir / "edits_history.jsonl", "a") as f:
             f.write(json.dumps({"ts": _now(), "edits": edits,
@@ -295,7 +336,10 @@ class SessionStore:
         for ov in body.get("lane_overrides") or ():
             if not isinstance(ov, dict) or "mix" not in ov:
                 raise ValueError(f"lane override needs 'mix': {ov!r}")
-            mix = int(ov["mix"])
+            try:
+                mix = int(ov["mix"])
+            except (TypeError, ValueError):
+                raise ValueError(f"lane override mix must be an integer: {ov!r}")
             if mix not in mixes:
                 raise ValueError(f"lane override for unknown mix {mix}")
             entry: Dict = {"mix": mix}
@@ -305,22 +349,40 @@ class SessionStore:
             if len(entry) == 1:
                 raise ValueError(f"lane override for mix {mix} sets nothing")
             overrides.append(entry)
-        deleted = [int(b) for b in body.get("deleted_bands") or ()]
+        try:
+            deleted = [int(b) for b in body.get("deleted_bands") or ()]
+        except (TypeError, ValueError):
+            raise ValueError("deleted_bands must be integers")
+        # synthetic (user-added) bands are removed via added_bands, not here
+        deleted = [b for b in deleted if b < SYNTHETIC_ID_BASE]
         added = []
         for ab in body.get("added_bands") or ():
             if not isinstance(ab, dict) or "x" not in ab or "y" not in ab:
                 raise ValueError(f"added band needs x and y: {ab!r}")
-            added.append({"x": float(ab["x"]), "y": float(ab["y"])})
+            try:
+                x, y = float(ab["x"]), float(ab["y"])
+            except (TypeError, ValueError):
+                raise ValueError(f"added band x/y must be numbers: {ab!r}")
+            if not (math.isfinite(x) and math.isfinite(y)):
+                raise ValueError(f"added band x/y must be finite: {ab!r}")
+            added.append({"x": x, "y": y})
         for key in ("match_tol", "lane_gap"):
-            if body.get(key) is not None and float(body[key]) <= 0:
-                raise ValueError(f"{key} must be > 0")
+            v = body.get(key)
+            if v is None:
+                continue
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} must be a number")
+            # NaN/Inf would poison meta.json and break every JSON response
+            if not math.isfinite(v) or v <= 0:
+                raise ValueError(f"{key} must be finite and > 0")
         return {"lane_overrides": overrides, "deleted_bands": deleted,
                 "added_bands": added}
 
     @staticmethod
     def _write_edits(sdir: Path, edits: Dict) -> None:
-        with open(sdir / "edits.json", "w") as f:
-            json.dump(edits, f, indent=1)
+        _atomic_write_json(sdir / "edits.json", edits, indent=1)
 
     # ---------- pipeline ----------
 
@@ -351,9 +413,8 @@ class SessionStore:
             },
             "typing": result.to_dict(),
         }
-        (sdir / "report.txt").write_text(report)
-        with open(sdir / "typing.json", "w") as f:
-            json.dump(typing_payload, f, indent=2)
+        _atomic_write_text(sdir / "report.txt", report)
+        _atomic_write_json(sdir / "typing.json", typing_payload, indent=2)
 
         state = {
             "id": sid,
@@ -371,8 +432,7 @@ class SessionStore:
             "typing": result.to_dict(),
             "edits": edits,
         }
-        with open(sdir / "state.json", "w") as f:
-            json.dump(state, f)
+        _atomic_write_json(sdir / "state.json", state)
         return state
 
     @staticmethod

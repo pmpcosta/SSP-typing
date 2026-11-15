@@ -24,6 +24,10 @@ setup(
     version="1.0.0",
     url="https://github.com/mattaq31/GelGenie/",
     packages=find_packages(),
+    package_data={
+        # ship the web UI with the package (Phase 3)
+        "ssp": ["webapp/static/*"],
+    },
     extras_require={
         # lightweight standalone segmentation runtime (no torch / no QuPath)
         "ssp": [

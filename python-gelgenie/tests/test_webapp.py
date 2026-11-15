@@ -363,3 +363,99 @@ def test_root_redirects_to_ui(client):
     r = client.get('/', follow_redirects=False)
     assert r.status_code in (302, 307)
     assert r.headers['location'].endswith('/ui/')
+
+
+# ---------- Phase-3 review hardening ----------
+
+def test_edits_reject_nan_and_bad_types(client):
+    s = _create(client)
+    sid = s['id']
+    base = {'lane_overrides': [], 'deleted_bands': [], 'added_bands': []}
+    # NaN/Inf would poison meta.json and brick every JSON response.
+    # httpx refuses to serialize non-finite floats, so send raw JSON literals
+    # (which Python's json.loads accepts, as would any buggy/malicious client)
+    for lit in ('NaN', 'Infinity', '-Infinity'):
+        raw = ('{"lane_overrides": [], "deleted_bands": [], "added_bands": [],'
+               f' "match_tol": {lit}}}')
+        r = client.post(f'/api/sessions/{sid}/edits', content=raw,
+                        headers={'Content-Type': 'application/json'})
+        assert r.status_code == 400, lit
+    raw = ('{"lane_overrides": [], "deleted_bands": [],'
+           ' "added_bands": [{"x": NaN, "y": 1}]}')
+    r = client.post(f'/api/sessions/{sid}/edits', content=raw,
+                    headers={'Content-Type': 'application/json'})
+    assert r.status_code == 400
+    # malformed types: clean 400s, not 500s
+    for body in (
+        {**base, 'match_tol': {'a': 1}},
+        {**base, 'match_tol': 'abc'},
+        {**base, 'deleted_bands': [None]},
+        {'lane_overrides': [{'mix': None, 'positive': True}],
+         'deleted_bands': [], 'added_bands': []},
+        {'lane_overrides': [], 'deleted_bands': [],
+         'added_bands': [{'x': 'q', 'y': 1}]},
+    ):
+        r = client.post(f'/api/sessions/{sid}/edits', json=body)
+        assert r.status_code == 400, body
+    # session still fully usable after the rejections
+    r = client.get(f'/api/sessions/{sid}')
+    assert r.status_code == 200
+    assert r.json()['typing']['loci']['A']['score'] == 0
+
+
+def test_synthetic_delete_ids_filtered(client):
+    s = _create(client)
+    sid = s['id']
+    r = client.post(f'/api/sessions/{sid}/edits', json={
+        'lane_overrides': [], 'deleted_bands': [],
+        'added_bands': [{'x': 225.0, 'y': 30.0}]})   # lane 5 product position
+    assert r.json()['typing']['loci']['A']['positives'] == [1, 2, 3, 5]
+    # deleting by a synthetic id is a filtered no-op; the added band stays
+    r2 = client.post(f'/api/sessions/{sid}/edits', json={
+        'lane_overrides': [], 'deleted_bands': [1000000],
+        'added_bands': [{'x': 225.0, 'y': 30.0}]})
+    assert r2.status_code == 200
+    assert r2.json()['edits']['deleted_bands'] == []
+    assert r2.json()['typing']['loci']['A']['positives'] == [1, 2, 3, 5]
+    # removing it properly via added_bands works
+    r3 = client.post(f'/api/sessions/{sid}/edits', json={
+        'lane_overrides': [], 'deleted_bands': [], 'added_bands': []})
+    assert r3.json()['typing']['loci']['A']['positives'] == [1, 2, 3]
+
+
+def test_corrupt_state_json_rebuilds(client, tmp_path):
+    s = _create(client)
+    sid = s['id']
+    (tmp_path / 'data' / 'sessions' / sid / 'state.json').write_text('{corrupt')
+    r = client.get(f'/api/sessions/{sid}')
+    assert r.status_code == 200   # rebuilt from bands/tray/edits, not 500
+    assert r.json()['typing']['loci']['A']['best_pairs'] == [['A*01:01', 'A*02:01']]
+
+
+def test_image_media_type_allowlisted(client):
+    r = client.post('/api/sessions', files={
+        'image': ('gel.html', _synth_image_bytes(), 'text/html'),
+        'tray': ('tray.json', _synth_tray_json(), 'application/json'),
+    })
+    assert r.status_code == 200
+    sid = r.json()['id']
+    r = client.get(f'/api/sessions/{sid}/image')
+    assert r.status_code == 200
+    assert r.headers['content-type'].startswith('application/octet-stream')
+    assert r.headers['x-content-type-options'] == 'nosniff'
+
+
+def test_tray_store_same_name_different_content_kept(client):
+    def _tray_bytes(spec):
+        return json.dumps(Tray(name='t', lanes=[
+            TrayLane(mix=1, locus='A', product_bp=[330], control_bp=256,
+                     serotypes='', specificities=spec)]).to_dict()).encode()
+    t1, t2 = _tray_bytes('A*01:01'), _tray_bytes('A*02:01')
+    up = lambda b: client.post('/api/trays',
+                               files={'tray': ('t.json', b, 'application/json')})
+    assert up(t1).status_code == 200
+    assert up(t2).status_code == 200       # different content -> suffixed name
+    assert up(t2).status_code == 200       # identical re-upload -> no new entry
+    names = [t['name'] for t in client.get('/api/trays').json()]
+    assert len(names) == 2 and 't' in names
+    assert any(n.startswith('t-') for n in names)

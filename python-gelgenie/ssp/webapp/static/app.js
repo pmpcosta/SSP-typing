@@ -17,9 +17,12 @@ const KIND_COLORS = {
 };
 
 const state = {
-  sid: null, data: null, img: null, maskCanvas: null,
+  sid: null, data: null, edits: null, img: null, maskCanvas: null,
   scale: null, showMask: false, laneBounds: [],
 };
+
+const clone = (o) => JSON.parse(JSON.stringify(o));
+let tolTouched = false;   // slider moved since last server state?
 
 const $ = (id) => document.getElementById(id);
 
@@ -97,9 +100,10 @@ function bindUI() {
   const tol = $('match-tol');
   let tolTimer = null;
   tol.addEventListener('input', () => {
+    tolTouched = true;
     $('match-tol-val').textContent = Number(tol.value).toFixed(2);
     clearTimeout(tolTimer);
-    tolTimer = setTimeout(() => { if (state.sid) pushEdits(); }, 450);
+    tolTimer = setTimeout(() => { if (state.sid) queuePush(); }, 450);
   });
 
   const canvas = $('gel-canvas');
@@ -183,7 +187,8 @@ async function uploadTray(ev) {
   }
 }
 
-async function setState(data, { refit = false, newSession = false } = {}) {
+async function setState(data, { refit = false, newSession = false,
+                                adoptEdits = true } = {}) {
   if (newSession || data.id !== state.sid) {
     state.sid = data.id;
     state.img = null;
@@ -193,6 +198,8 @@ async function setState(data, { refit = false, newSession = false } = {}) {
     if (refit) state.scale = null;
   }
   state.data = data;
+  if (adoptEdits) state.edits = clone(data.edits);
+  tolTouched = false;
 
   if (!state.img) {
     state.img = new Image();
@@ -216,52 +223,70 @@ async function setState(data, { refit = false, newSession = false } = {}) {
   renderTyping();
   renderLaneTable();
   draw();
-  loadSessions();
 }
 
 async function loadMask() {
-  const img = new Image();
-  img.src = `/api/sessions/${state.sid}/mask`;
-  await img.decode();
-  const c = document.createElement('canvas');
-  c.width = img.naturalWidth; c.height = img.naturalHeight;
-  const ctx = c.getContext('2d');
-  ctx.drawImage(img, 0, 0);
-  const d = ctx.getImageData(0, 0, c.width, c.height);
-  for (let i = 0; i < d.data.length; i += 4) {
-    const on = d.data[i] > 127;
-    d.data[i] = 46; d.data[i + 1] = 204; d.data[i + 2] = 113;
-    d.data[i + 3] = on ? 110 : 0;
+  try {
+    const img = new Image();
+    img.src = `/api/sessions/${state.sid}/mask`;
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0, 0, c.width, c.height);
+    for (let i = 0; i < d.data.length; i += 4) {
+      const on = d.data[i] > 127;
+      d.data[i] = 46; d.data[i + 1] = 204; d.data[i + 2] = 113;
+      d.data[i + 3] = on ? 110 : 0;
+    }
+    ctx.putImageData(d, 0, 0);
+    state.maskCanvas = c;
+  } catch (e) {
+    console.warn('mask load failed', e);
+    state.showMask = false;
+    $('show-mask').checked = false;
   }
-  ctx.putImageData(d, 0, 0);
-  state.maskCanvas = c;
 }
 
 /* ---------------- edits ---------------- */
 
+let pushInFlight = false;
+let pushQueued = false;
+
 function currentEdits() {
-  const e = (state.data && state.data.edits) || {};
-  return {
-    lane_overrides: (e.lane_overrides || []).map((o) => ({ ...o })),
-    deleted_bands: [...(e.deleted_bands || [])],
-    added_bands: (e.added_bands || []).map((a) => ({ ...a })),
-  };
+  // client-authoritative edit set; the server copy may lag during rapid edits
+  return state.edits || { lane_overrides: [], deleted_bands: [], added_bands: [] };
 }
 
-async function pushEdits(editsOverride = null) {
+// One POST in flight at a time; interactions during a push mark the queue and
+// the LATEST state.edits is re-sent afterwards, so rapid clicks can never
+// overwrite each other server-side (lost-update race).
+async function queuePush() {
   if (!state.sid) return;
-  const body = editsOverride || currentEdits();
-  body.match_tol = Number($('match-tol').value);
+  if (pushInFlight) { pushQueued = true; return; }
+  pushInFlight = true;
   try {
-    const data = await api(`/api/sessions/${state.sid}/edits`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    await setState(data);
+    do {
+      pushQueued = false;
+      const body = clone(currentEdits());
+      if (tolTouched) body.match_tol = Number($('match-tol').value);
+      const data = await api(`/api/sessions/${state.sid}/edits`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      await setState(data, { adoptEdits: false });
+    } while (pushQueued);
   } catch (e) {
     $('upload-status').className = 'status error';
     $('upload-status').textContent = e.message;
+    if (state.data) {         // roll back to the last server-confirmed edits
+      state.edits = clone(state.data.edits);
+      renderTyping(); renderLaneTable(); draw();
+    }
+  } finally {
+    pushInFlight = false;
   }
 }
 
@@ -270,7 +295,9 @@ async function resetEdits() {
   const tol = d.match_tol ?? 0.25;
   $('match-tol').value = String(tol);
   $('match-tol-val').textContent = Number(tol).toFixed(2);
-  await pushEdits({ lane_overrides: [], deleted_bands: [], added_bands: [] });
+  tolTouched = true;   // restore the server default explicitly
+  state.edits = { lane_overrides: [], deleted_bands: [], added_bands: [] };
+  await queuePush();
 }
 
 /* ---------------- canvas ---------------- */
@@ -431,14 +458,19 @@ function onCanvasClick(ev) {
   if (iy < 0) return;
 
   if (ev.shiftKey) {            // add band
-    const edits = currentEdits();
-    edits.added_bands.push({ x: Math.round(ix * 10) / 10, y: Math.round(iy * 10) / 10 });
-    pushEdits(edits);
+    currentEdits().added_bands.push(
+      { x: Math.round(ix * 10) / 10, y: Math.round(iy * 10) / 10 });
+    queuePush();
     return;
   }
-  // hit-test analysis bands (topmost = smallest area first)
+  // hit-test bands of the lane under the cursor only: at fit-zoom the 3-px
+  // pad reaches ~35 image px (wider than a lane), so without the lane
+  // restriction a click can grab the neighboring lane's band. Real bands
+  // first (synthetic area=1 would otherwise sort first and shadow them).
+  const lb = state.laneBounds.find((bb) => ix >= bb.left && ix < bb.right);
   const hits = [];
   for (const lane of state.data.analysis.lanes) {
+    if (lb && lane.mix !== lb.mix) continue;
     for (const bd of lane.bands || []) {
       const [y0, x0, y1, x1] = bd.bbox;
       const pad = 3 / s;
@@ -448,14 +480,27 @@ function onCanvasClick(ev) {
     }
   }
   if (hits.length) {
-    hits.sort((a, b) => a.area - b.area);
+    hits.sort((a, b) => ((a.synthetic ? 1 : 0) - (b.synthetic ? 1 : 0))
+                        || (a.area - b.area));
+    const hit = hits[0];
     const edits = currentEdits();
-    edits.deleted_bands.push(hits[0].id);
-    pushEdits(edits);
+    if (hit.synthetic) {
+      // remove a user-added band by matching its stored position
+      const i = edits.added_bands.findIndex((ab) =>
+        Math.abs(ab.x - hit.centroid_x) < 0.51 &&
+        Math.abs(ab.y - hit.centroid_y) < 0.51);
+      if (i !== -1) edits.added_bands.splice(i, 1);
+      else return;
+    } else if (!edits.deleted_bands.includes(hit.id)) {
+      edits.deleted_bands.push(hit.id);
+    } else {
+      return;   // already deleted client-side; don't double-push
+    }
+    queuePush();
     return;
   }
   // hit-test deleted raw bands -> restore
-  const deleted = new Set(state.data.edits.deleted_bands || []);
+  const deleted = new Set((state.data.edits.deleted_bands || []));
   for (const bd of state.data.bands || []) {
     if (!deleted.has(bd.id)) continue;
     const [y0, x0, y1, x1] = bd.bbox;
@@ -463,7 +508,7 @@ function onCanvasClick(ev) {
     if (ix >= x0 - pad && ix <= x1 + pad && iy >= y0 - pad && iy <= y1 + pad) {
       const edits = currentEdits();
       edits.deleted_bands = edits.deleted_bands.filter((d) => d !== bd.id);
-      pushEdits(edits);
+      queuePush();
       return;
     }
   }
@@ -478,11 +523,16 @@ function cycleOverride(mix) {
     if (lane && !lane.valid) ov.valid = true;   // force-positive needs validity
     edits.lane_overrides.push(ov);
   } else if (edits.lane_overrides[i].positive === true) {
-    edits.lane_overrides[i] = { mix, positive: false };
+    const next = { mix, positive: false };
+    // carry a forced-valid flag so stage 2 stays meaningful on invalid lanes
+    if (edits.lane_overrides[i].valid !== undefined) {
+      next.valid = edits.lane_overrides[i].valid;
+    }
+    edits.lane_overrides[i] = next;
   } else {
     edits.lane_overrides.splice(i, 1);          // back to auto
   }
-  pushEdits(edits);
+  queuePush();
 }
 
 /* ---------------- results panels ---------------- */
@@ -492,9 +542,9 @@ function genotypeText(loc) {
   if (loc.allele_options) {
     return loc.allele_options.map((opts) => opts.join('/')).join('  +  ');
   }
-  const shown = loc.best_pairs.slice(0, 4).map((p) => `${p[0]} + ${p[1]}`);
+  const shown = loc.best_pairs.slice(0, 6).map((p) => `${p[0]} + ${p[1]}`);
   let t = shown.join(';  ');
-  if (loc.best_pairs.length > 4) t += `;  …(+${loc.best_pairs.length - 4} more)`;
+  if (loc.best_pairs.length > 6) t += `;  …(+${loc.best_pairs.length - 6} more)`;
   return t;
 }
 

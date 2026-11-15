@@ -122,7 +122,8 @@ def create_app(config: AppConfig) -> FastAPI:
             path, media_type = store.image_file(sid)
         except KeyError:
             raise HTTPException(404, f"no such session/file: {sid}")
-        return FileResponse(path, media_type=media_type)
+        return FileResponse(path, media_type=media_type,
+                            headers={"X-Content-Type-Options": "nosniff"})
 
     @app.get("/api/sessions/{sid}/mask", include_in_schema=False)
     def get_mask(sid: str):
@@ -130,7 +131,8 @@ def create_app(config: AppConfig) -> FastAPI:
             path = store.session_file(sid, "mask.png")
         except KeyError:
             raise HTTPException(404, f"no such session/file: {sid}")
-        return FileResponse(path, media_type="image/png")
+        return FileResponse(path, media_type="image/png",
+                            headers={"X-Content-Type-Options": "nosniff"})
 
     @app.get("/api/sessions/{sid}/typing.json")
     def download_typing(sid: str):

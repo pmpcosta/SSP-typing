@@ -12,18 +12,22 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
-"""
 
-"""Standalone SSP HLA typing toolkit.
+Standalone SSP HLA typing toolkit.
 
 Derives from GelGenie (https://github.com/mattaq31/GelGenie). Provides gel-doc
 image segmentation and downstream band analysis without requiring QuPath.
 
-Submodules (added incrementally):
-    ssp.preprocessing  - image normalization / padding helpers
-    ssp.inference      - ONNX Runtime segmentation model wrapper
-    ssp.bands          - mask -> connected-component bands -> lanes
-    ssp.cli            - `ssp-typing` command line entry point
+Submodules:
+    ssp.preprocessing    - image normalization / padding helpers
+    ssp.inference        - ONNX Runtime segmentation model wrapper
+    ssp.bands            - mask -> connected-component bands -> lanes
+    ssp.trays            - tray sheet schema/loader + specificity parsing
+    ssp.analysis         - lanes, control fitting, bp calibration, band calls
+    ssp.typing_engine    - positivity pattern -> allele-pair typing
+    ssp.report           - shared human-readable report
+    ssp.webapp           - local FastAPI web app (sessions, edits, UI)
+    ssp.cli              - `ssp-typing` command line entry point
 """
 
 __version__ = "0.1.0"

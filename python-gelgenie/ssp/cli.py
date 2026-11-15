@@ -251,9 +251,14 @@ DEFAULT_DATA_DIR = os.path.expanduser("~/.local/share/ssptyping")
 
 def _run_server(config, host: str, port: int) -> None:
     """Blocking server run; isolated so tests can stub it out."""
-    import uvicorn
+    try:
+        import uvicorn
 
-    from ssp.webapp import create_app
+        from ssp.webapp import create_app
+    except ImportError as e:
+        raise click.ClickException(
+            f"web app dependency missing ({e.name}); install with: "
+            "pip install 'GelGenie[webapp]'")
     uvicorn.run(create_app(config), host=host, port=port, log_level="info")
 
 
@@ -284,12 +289,19 @@ def serve(host, port, model, data_dir, no_browser) -> None:
     config = AppConfig(model_path=model_path,
                        data_dir=data_dir or DEFAULT_DATA_DIR)
 
+    if host == "0.0.0.0":
+        click.echo("WARNING: binding on all interfaces. This app has no "
+                   "authentication and results are advisory/research-use; "
+                   "prefer the default 127.0.0.1.")
+
     if not no_browser:
         import threading
         import webbrowser
         shown = "localhost" if host in ("0.0.0.0", "127.0.0.1") else host
         url = f"http://{shown}:{port}/"
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+        timer = threading.Timer(1.0, lambda: webbrowser.open(url))
+        timer.daemon = True  # never hold up exit if the bind fails
+        timer.start()
         click.echo(f"opening {url} ...")
 
     click.echo(f"serving on http://{host}:{port}  (data: {config.data_dir})")
