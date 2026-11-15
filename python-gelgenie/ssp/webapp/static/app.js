@@ -266,8 +266,10 @@ async function pushEdits(editsOverride = null) {
 }
 
 async function resetEdits() {
-  const tol = state.data ? state.data.params.match_tol : 0.25;
+  const d = (state.data && state.data.defaults) || {};
+  const tol = d.match_tol ?? 0.25;
   $('match-tol').value = String(tol);
+  $('match-tol-val').textContent = Number(tol).toFixed(2);
   await pushEdits({ lane_overrides: [], deleted_bands: [], added_bands: [] });
 }
 

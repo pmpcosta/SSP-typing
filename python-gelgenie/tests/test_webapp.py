@@ -120,6 +120,7 @@ def test_create_session_runs_pipeline(client):
     assert t['positives'] == [1, 2, 3]
     assert t['best_pairs'] == [['A*01:01', 'A*02:01']]
     assert s['edits'] == {'lane_overrides': [], 'deleted_bands': [], 'added_bands': []}
+    assert s['defaults'] == {'match_tol': 0.25, 'lane_gap': 20.0}
     # tray summary for the UI results table
     assert [l['mix'] for l in s['tray']['lanes']] == [1, 2, 3, 4, 5]
     assert s['tray']['lanes'][0]['specificities'] == 'A*01:01'
@@ -283,6 +284,52 @@ def test_session_without_tray_400(client):
     r = client.post('/api/sessions', files={
         'image': ('gel.png', _synth_image_bytes(), 'image/png')})
     assert r.status_code == 400
+
+
+# ---------- uploads that broke in real use (regression tests) ----------
+
+def test_xlsx_tray_upload_via_api(client, tmp_path):
+    # openpyxl validates by extension: the store must keep a .xlsx suffix
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.append(['HLA-A*'])
+    for mix, spec in [(1, 'A*01:01'), (2, 'A*02:01'),
+                      (3, 'A*01:01, A*02:01'), (4, 'A*03:01'), (5, 'A*11:01')]:
+        ws.append([mix, 330, 256, '', spec, ''])
+    p = tmp_path / 'vendor.xlsx'
+    wb.save(p)
+    r = client.post('/api/sessions', files={
+        'image': ('gel.png', _synth_image_bytes(), 'image/png'),
+        'tray': ('vendor.xlsx', p.read_bytes(),
+                 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+    })
+    assert r.status_code == 200, r.text
+    s = r.json()
+    assert s['typing']['loci']['A']['best_pairs'] == [['A*01:01', 'A*02:01']]
+    # the xlsx arrived normalized into the tray store
+    assert 'vendor' in [t['name'] for t in client.get('/api/trays').json()]
+
+
+def test_garbage_tray_upload_400(client):
+    r = client.post('/api/sessions', files={
+        'image': ('gel.png', _synth_image_bytes(), 'image/png'),
+        'tray': ('broken.xlsx', b'not a spreadsheet at all', 'application/octet-stream'),
+    })
+    assert r.status_code == 400
+    assert 'could not parse tray' in r.json()['detail']
+
+
+def test_garbage_image_upload_400(client):
+    r = client.post('/api/sessions', files={
+        'image': ('gel.png', b'not an image', 'image/png'),
+        'tray': ('tray.json', _synth_tray_json(), 'application/json'),
+    })
+    assert r.status_code == 400
+    assert 'could not read image' in r.json()['detail']
+    # failed session left no orphan on disk
+    assert client.get('/api/sessions').json() == []
 
 
 # ---------- downloads ----------

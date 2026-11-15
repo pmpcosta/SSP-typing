@@ -40,10 +40,10 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -107,10 +107,16 @@ class SessionStore:
         """
         stem = _safe_stem(filename, "tray")
         is_xlsx = (filename or "").lower().endswith(".xlsx")
-        tmp = self.config.trays_dir / f".upload-{uuid.uuid4().hex}"
+        # openpyxl validates by file extension -> temp file needs the right one
+        suffix = ".xlsx" if is_xlsx else ".json"
+        tmp = self.config.trays_dir / f".upload-{uuid.uuid4().hex}{suffix}"
         tmp.write_bytes(data)
         try:
             tray = load_tray_xlsx(tmp, name=stem) if is_xlsx else Tray.load_json(tmp)
+        except ValueError:
+            raise
+        except Exception as e:  # InvalidFileException, JSONDecodeError, ...
+            raise ValueError(f"could not parse tray file {filename!r}: {e}")
         finally:
             tmp.unlink(missing_ok=True)
         tray.save_json(self.config.trays_dir / f"{stem}.json")
@@ -160,33 +166,41 @@ class SessionStore:
         else:
             raise ValueError("provide a tray file or tray_name")
 
-        try:
-            raw = np.asarray(imageio.imread(BytesIO(image_bytes)))
-        except Exception as e:  # unreadable/unsupported image
-            raise ValueError(f"could not read image {image_name!r}: {e}")
-        h, w = raw.shape[:2]
-
-        params = {
-            "min_area": int(min_area if min_area is not None
-                            else self.config.default_min_area),
-            "invert": bool(invert),
-            "percentile_norm": bool(percentile_norm),
-            "match_tol": self.config.default_match_tol,
-            "lane_gap": self.config.default_lane_gap,
-        }
-        model = GelGenieONNX(model_path=self.config.model_path)
-        mask, bands = segment_image(
-            raw, model, invert=params["invert"],
-            data_max_norm=not params["percentile_norm"],
-            dtype_max=_infer_dtype_max(raw), min_area=params["min_area"],
-        )
-
         sid = uuid.uuid4().hex[:12]
         sdir = self.config.sessions_dir / sid
         sdir.mkdir(parents=True)
-        ext = Path(image_name or "image.png").suffix or ".png"
-        image_file = f"image{_SAFE.sub('_', ext)}"
-        (sdir / image_file).write_bytes(image_bytes)
+        ext = _SAFE.sub("_", Path(image_name or "image.png").suffix or ".png")
+        image_file = f"image{ext}"
+        try:
+            (sdir / image_file).write_bytes(image_bytes)
+            # read back from the stored file: same code path as the CLI, and
+            # avoids format-sniffing issues with file-like objects (JPEG)
+            try:
+                raw = np.asarray(imageio.imread(str(sdir / image_file)))
+            except Exception as e:  # unreadable/unsupported image
+                raise ValueError(f"could not read image {image_name!r}: {e}")
+            h, w = raw.shape[:2]
+
+            params = {
+                "min_area": int(min_area if min_area is not None
+                                else self.config.default_min_area),
+                "invert": bool(invert),
+                "percentile_norm": bool(percentile_norm),
+                "match_tol": self.config.default_match_tol,
+                "lane_gap": self.config.default_lane_gap,
+            }
+            model = GelGenieONNX(model_path=self.config.model_path)
+            mask, bands = segment_image(
+                raw, model, invert=params["invert"],
+                data_max_norm=not params["percentile_norm"],
+                dtype_max=_infer_dtype_max(raw), min_area=params["min_area"],
+            )
+        except ValueError:
+            shutil.rmtree(sdir, ignore_errors=True)
+            raise
+        except Exception as e:
+            shutil.rmtree(sdir, ignore_errors=True)
+            raise ValueError(f"session failed: {e}")
         imageio.imwrite(str(sdir / "mask.png"), (mask * 255).astype(np.uint8))
         with open(sdir / "bands.json", "w") as f:
             json.dump([b.to_dict() for b in bands], f)
@@ -199,6 +213,8 @@ class SessionStore:
             "tray_name": tray.name, "tray_store_name": store_name,
             "created": _now(), "image": {"width": int(w), "height": int(h)},
             "params": params,
+            "defaults": {"match_tol": self.config.default_match_tol,
+                         "lane_gap": self.config.default_lane_gap},
         }
         with open(sdir / "meta.json", "w") as f:
             json.dump(meta, f, indent=1)
@@ -346,6 +362,9 @@ class SessionStore:
             "created": meta["created"],
             "image": meta["image"],
             "params": params,
+            "defaults": meta.get("defaults", {
+                "match_tol": self.config.default_match_tol,
+                "lane_gap": self.config.default_lane_gap}),
             "bands": raw_bands,
             "tray": tray.to_dict(),
             "analysis": ga.to_dict(),
