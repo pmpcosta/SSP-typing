@@ -299,3 +299,20 @@ def test_typing_json_and_report_downloads(client):
     text = r.text
     assert 'HLA-A' in text and 'A*01:01 + A*02:01' in text
     assert 'attachment' in r.headers.get('content-disposition', '')
+
+
+# ---------- static UI ----------
+
+def test_ui_assets_served(client):
+    r = client.get('/ui/')
+    assert r.status_code == 200
+    assert 'SSP Typing' in r.text and 'app.js' in r.text
+    for asset in ('app.js', 'style.css'):
+        r = client.get(f'/ui/{asset}')
+        assert r.status_code == 200 and len(r.content) > 100
+
+
+def test_root_redirects_to_ui(client):
+    r = client.get('/', follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert r.headers['location'].endswith('/ui/')

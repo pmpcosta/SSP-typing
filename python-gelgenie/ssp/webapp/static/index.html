@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSP Typing</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="topbar">
+  <h1>SSP&nbsp;Typing</h1>
+  <div id="session-info">no session</div>
+  <div id="global-warnings"></div>
+</header>
+
+<aside id="sidebar">
+  <section>
+    <h2>New session</h2>
+    <form id="upload-form">
+      <label>Gel image
+        <input type="file" id="image-file" accept="image/*" required>
+      </label>
+      <label>Tray sheet (.xlsx/.json)
+        <input type="file" id="tray-file" accept=".xlsx,.json">
+      </label>
+      <label>…or stored tray
+        <select id="tray-select"><option value="">— upload a file above —</option></select>
+      </label>
+      <div class="row">
+        <label><input type="checkbox" id="invert-flag"> invert</label>
+        <label>min area <input type="number" id="min-area" value="5" min="1" style="width:4em"></label>
+      </div>
+      <button type="submit" id="run-btn">Run pipeline</button>
+      <div id="upload-status" class="status"></div>
+    </form>
+    <div class="row">
+      <button id="upload-tray-btn" type="button">Upload tray to store…</button>
+      <input type="file" id="tray-upload" hidden accept=".xlsx,.json">
+    </div>
+  </section>
+
+  <section>
+    <h2>Sessions</h2>
+    <ul id="session-list"></ul>
+  </section>
+</aside>
+
+<main id="main">
+  <div id="placeholder">
+    Upload a gel image and a tray sheet, then <b>Run pipeline</b>.<br>
+    Results are advisory / research use only.
+  </div>
+
+  <div id="workspace" hidden>
+    <div id="toolbar">
+      <button id="zoom-out" type="button" title="zoom out">−</button>
+      <button id="zoom-in" type="button" title="zoom in">+</button>
+      <button id="zoom-fit" type="button" title="fit width">fit</button>
+      <label class="chk"><input type="checkbox" id="show-mask"> mask</label>
+      <label>match&nbsp;tol
+        <input type="range" id="match-tol" min="0.05" max="0.60" step="0.01">
+        <span id="match-tol-val"></span>
+      </label>
+      <button id="reset-edits" type="button">Reset edits</button>
+      <span class="spacer"></span>
+      <a id="dl-typing" class="dl" download>typing.json</a>
+      <a id="dl-report" class="dl" download>report.txt</a>
+    </div>
+
+    <div id="gel-container">
+      <canvas id="gel-canvas"></canvas>
+    </div>
+    <div id="hint">
+      click band: delete/restore &nbsp;·&nbsp; shift+click: add band &nbsp;·&nbsp;
+      click lane header: force positive → negative → auto &nbsp;·&nbsp; ctrl+scroll: zoom
+    </div>
+
+    <section id="results">
+      <h2>Typing</h2>
+      <div id="loci-results"></div>
+      <h2>Lanes</h2>
+      <div id="lane-table-wrap">
+        <table id="lane-table">
+          <thead><tr>
+            <th>mix</th><th>locus</th><th>specificities</th>
+            <th>control</th><th>call</th><th>bands (kind @ bp est)</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
