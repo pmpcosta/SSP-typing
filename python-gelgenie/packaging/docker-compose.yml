@@ -1,0 +1,19 @@
+# Local-only deployment: the UI is bound to 127.0.0.1 on the host.
+# Remote access: front it with `tailscale serve` (or an authenticated proxy) —
+# the app itself has no authentication and its results are advisory only.
+services:
+  ssp-typing:
+    build:
+      context: ..
+      dockerfile: packaging/Dockerfile
+    image: ssp-typing:latest
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - ssptyping-models:/home/ssp/.cache/ssptyping
+      - ssptyping-data:/home/ssp/.local/share/ssptyping
+    restart: unless-stopped
+
+volumes:
+  ssptyping-models:
+  ssptyping-data:
