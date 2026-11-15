@@ -35,6 +35,7 @@ import numpy as np
 import rich_click as click
 
 from ssp import __version__
+from ssp import models as model_zoo
 from ssp.analysis import analyse_gel
 from ssp.bands import (
     Band,
@@ -93,10 +94,88 @@ def _infer_dtype_max(raw: np.ndarray) -> float:
     return 255.0
 
 
+def _resolve_model(explicit: Optional[str]):
+    """Resolve --model/$SSP_MODEL/cache to an existing path or fail cleanly."""
+    try:
+        return model_zoo.resolve(explicit)
+    except model_zoo.ModelFetchError as e:
+        raise click.ClickException(str(e))
+
+
+def _download_with_progress(name: str):
+    """Fetch registry and download ``name`` into the cache with a progress bar."""
+    reg = model_zoo.fetch_registry()
+    if name not in reg:
+        raise model_zoo.ModelFetchError(
+            f"unknown model {name!r}; available: {', '.join(sorted(reg))}")
+    info = reg[name]
+    dest = info.local_path()
+    if dest.is_file():
+        return dest
+    try:
+        from rich.progress import (BarColumn, DownloadColumn, Progress,
+                                   TimeRemainingColumn, TransferSpeedColumn)
+        with Progress(BarColumn(), DownloadColumn(), TransferSpeedColumn(),
+                      TimeRemainingColumn()) as prog:
+            task = prog.add_task(f"downloading {info.abbrv}", total=None)
+
+            def hook(done, total):
+                if total:
+                    prog.update(task, total=total, completed=done)
+                else:
+                    prog.update(task, completed=done)
+
+            return model_zoo.download_model(info, progress=hook)
+    except ImportError:      # rich missing: plain download
+        return model_zoo.download_model(info)
+
+
+@cli.group()
+def models() -> None:
+    """Manage GelGenie segmentation models (registry, cache, downloads)."""
+
+
+@models.command("list")
+def models_list() -> None:
+    """List zoo models and whether each is cached locally."""
+    try:
+        reg = model_zoo.fetch_registry()
+    except model_zoo.ModelFetchError as e:
+        raise click.ClickException(str(e))
+    for name in sorted(reg):
+        info = reg[name]
+        path = info.local_path()
+        state = f"cached: {path}" if path.is_file() else "not downloaded"
+        default = " (default)" if name == model_zoo.DEFAULT_MODEL_NAME else ""
+        click.echo(f"{name}{default}\n    {info.abbrv} — {info.description}\n    {state}")
+
+
+@models.command("download")
+@click.argument("name", required=False, default=model_zoo.DEFAULT_MODEL_NAME)
+def models_download(name) -> None:
+    """Download a model into the local cache (default: the Universal model)."""
+    try:
+        dest = _download_with_progress(name)
+    except model_zoo.ModelFetchError as e:
+        raise click.ClickException(str(e))
+    click.echo(f"saved: {dest}")
+
+
+@models.command("path")
+@click.argument("name", required=False, default=model_zoo.DEFAULT_MODEL_NAME)
+def models_path(name) -> None:
+    """Print the local cache path for a model (download it if missing)."""
+    try:
+        click.echo(_download_with_progress(name))
+    except model_zoo.ModelFetchError as e:
+        raise click.ClickException(str(e))
+
+
 @cli.command()
 @click.argument("image", type=click.Path(exists=True, dir_okay=False))
-@click.option("--model", "-m", required=True, type=click.Path(exists=True, dir_okay=False),
-              help="Path to a GelGenie .onnx segmentation model.")
+@click.option("--model", "-m", default=None,
+              help="GelGenie .onnx model path (default: $SSP_MODEL or the cached "
+                   "Universal model — see `ssp-typing models`).")
 @click.option("--output", "-o", required=True, type=click.Path(file_okay=False),
               help="Output directory for mask.png and bands.json.")
 @click.option("--invert", is_flag=True, help="Invert intensities before inference (dark bands on bright background).")
@@ -128,7 +207,7 @@ def segment(image, model, output, invert, percentile_norm, dtype_max, min_area,
                 param_hint="--lane-edges",
             )
 
-    model_obj = GelGenieONNX(model_path=model)
+    model_obj = GelGenieONNX(model_path=str(_resolve_model(model)))
     mask, bands = segment_image(
         np.asarray(raw),
         model_obj,
@@ -169,8 +248,9 @@ def load_tray(path: str) -> Tray:
 @click.argument("image", type=click.Path(exists=True, dir_okay=False))
 @click.option("--tray", "-t", required=True, type=click.Path(exists=True, dir_okay=False),
               help="Tray definition (.xlsx vendor sheet or .json).")
-@click.option("--model", "-m", required=True, type=click.Path(exists=True, dir_okay=False),
-              help="Path to a GelGenie .onnx segmentation model.")
+@click.option("--model", "-m", default=None,
+              help="GelGenie .onnx model path (default: $SSP_MODEL or the cached "
+                   "Universal model — see `ssp-typing models`).")
 @click.option("--output", "-o", required=True, type=click.Path(file_okay=False),
               help="Output directory for mask.png, typing.json and report.txt.")
 @click.option("--invert", is_flag=True, help="Invert intensities before inference.")
@@ -202,7 +282,7 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
         tray_obj = load_tray(tray)
     except ValueError as e:
         raise click.ClickException(str(e))
-    model_obj = GelGenieONNX(model_path=model)
+    model_obj = GelGenieONNX(model_path=str(_resolve_model(model)))
     mask, bands = segment_image(
         raw, model_obj, invert=invert,
         data_max_norm=not percentile_norm, dtype_max=dtype_max, min_area=min_area,
@@ -244,8 +324,6 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
     click.echo(f"  report -> {report_path}")
 
 
-DEFAULT_MODEL_PATH = os.path.expanduser(
-    "~/.cache/ssptyping/models/unet_dec_21_epoch_579.onnx")
 DEFAULT_DATA_DIR = os.path.expanduser("~/.local/share/ssptyping")
 
 
@@ -275,15 +353,25 @@ def _run_server(config, host: str, port: int) -> None:
 def serve(host, port, model, data_dir, no_browser) -> None:
     """Run the local web app: upload gels + tray sheets, inspect and edit
     lane calls interactively, export typing results."""
-    model_path = model or os.environ.get("SSP_MODEL") or DEFAULT_MODEL_PATH
-    if not os.path.isfile(model_path):
-        raise click.ClickException(
-            f"model not found: {model_path}\n"
-            "Pass --model or download the GelGenie Universal ONNX model:\n"
-            "  mkdir -p ~/.cache/ssptyping/models && curl -sL -o "
-            "~/.cache/ssptyping/models/unet_dec_21_epoch_579.onnx \\\n"
-            "    https://huggingface.co/mattaq/GelGenie-Universal-Dec-2023/"
-            "resolve/main/onnx_checkpoints/unet_dec_21_epoch_579.onnx")
+    try:
+        resolved = model_zoo.resolve(model)
+    except model_zoo.ModelFetchError as e:
+        if model or os.environ.get("SSP_MODEL"):
+            raise click.ClickException(str(e))  # explicit source broken: fail
+        # first run: fetch the default model so `serve` just works
+        click.echo("No model cached — downloading the GelGenie Universal "
+                   "model (~57 MB)...")
+        try:
+            resolved = _download_with_progress(model_zoo.DEFAULT_MODEL_NAME)
+        except model_zoo.ModelFetchError as e2:
+            raise click.ClickException(
+                f"could not download model: {e2}\n\n"
+                "Manual download:\n"
+                "  mkdir -p ~/.cache/ssptyping/models && curl -sL -o "
+                "~/.cache/ssptyping/models/unet_dec_21_epoch_579.onnx \\\n"
+                "    https://huggingface.co/mattaq/GelGenie-Universal-Dec-2023/"
+                "resolve/main/onnx_checkpoints/unet_dec_21_epoch_579.onnx")
+    model_path = str(resolved)
 
     from ssp.webapp import AppConfig
     config = AppConfig(model_path=model_path,
