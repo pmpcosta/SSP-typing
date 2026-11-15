@@ -198,8 +198,16 @@ async function setState(data, { refit = false, newSession = false,
     if (refit) state.scale = null;
   }
   state.data = data;
-  if (adoptEdits) state.edits = clone(data.edits);
-  tolTouched = false;
+  if (adoptEdits) {
+    state.edits = clone(data.edits);
+    // snap the slider only on fresh loads; inside the push-resend loop keep
+    // the user's in-flight slider input (tolTouched) so it is re-sent
+    // instead of silently dropped
+    const tol = $('match-tol');
+    tol.value = String(data.params.match_tol);
+    $('match-tol-val').textContent = Number(data.params.match_tol).toFixed(2);
+    tolTouched = false;
+  }
 
   if (!state.img) {
     state.img = new Image();
@@ -214,10 +222,6 @@ async function setState(data, { refit = false, newSession = false,
     `${data.image_name} × ${data.tray_name}  (${data.id})`;
   $('dl-typing').href = `/api/sessions/${data.id}/typing.json`;
   $('dl-report').href = `/api/sessions/${data.id}/report.txt`;
-
-  const tol = $('match-tol');
-  tol.value = String(data.params.match_tol);
-  $('match-tol-val').textContent = Number(data.params.match_tol).toFixed(2);
 
   renderWarnings();
   renderTyping();
@@ -499,10 +503,16 @@ function onCanvasClick(ev) {
     queuePush();
     return;
   }
-  // hit-test deleted raw bands -> restore
+  // hit-test deleted raw bands -> restore (same lane restriction as deletes:
+  // raw bands carry no lane field, so match their centroid against the bounds)
   const deleted = new Set((state.data.edits.deleted_bands || []));
   for (const bd of state.data.bands || []) {
     if (!deleted.has(bd.id)) continue;
+    if (lb) {
+      const bl = state.laneBounds.find(
+        (bb) => bd.centroid_x >= bb.left && bd.centroid_x < bb.right);
+      if (!bl || bl.mix !== lb.mix) continue;
+    }
     const [y0, x0, y1, x1] = bd.bbox;
     const pad = 3 / s;
     if (ix >= x0 - pad && ix <= x1 + pad && iy >= y0 - pad && iy <= y1 + pad) {

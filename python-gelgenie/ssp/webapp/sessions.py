@@ -190,8 +190,9 @@ class SessionStore:
                        percentile_norm: bool = False) -> Dict:
         # tray first: fail fast on a bad sheet before burning inference time
         if tray_bytes is not None:
-            _, tray = self.save_tray(tray_filename or "tray.xlsx", tray_bytes)
-            store_name = _safe_stem(tray_filename or "tray", "tray")
+            # save_tray returns the (possibly deduped) store name
+            store_name, tray = self.save_tray(tray_filename or "tray.xlsx",
+                                              tray_bytes)
         elif tray_name:
             tray = self._load_stored_tray(tray_name)
             store_name = _SAFE.sub("_", tray_name)
