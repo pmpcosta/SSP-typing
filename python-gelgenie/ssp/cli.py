@@ -244,5 +244,57 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
     click.echo(f"  report -> {report_path}")
 
 
+DEFAULT_MODEL_PATH = os.path.expanduser(
+    "~/.cache/ssptyping/models/unet_dec_21_epoch_579.onnx")
+DEFAULT_DATA_DIR = os.path.expanduser("~/.local/share/ssptyping")
+
+
+def _run_server(config, host: str, port: int) -> None:
+    """Blocking server run; isolated so tests can stub it out."""
+    import uvicorn
+
+    from ssp.webapp import create_app
+    uvicorn.run(create_app(config), host=host, port=port, log_level="info")
+
+
+@cli.command()
+@click.option("--host", default="127.0.0.1", show_default=True,
+              help="Interface to bind (local-only by default).")
+@click.option("--port", "-p", default=8765, show_default=True, type=int)
+@click.option("--model", "-m", default=None,
+              help="ONNX model path (default: $SSP_MODEL, else the cached "
+                   "GelGenie Universal model).")
+@click.option("--data-dir", default=None,
+              help=f"Session/tray store directory (default: {DEFAULT_DATA_DIR}).")
+@click.option("--no-browser", is_flag=True, help="Do not auto-open a browser.")
+def serve(host, port, model, data_dir, no_browser) -> None:
+    """Run the local web app: upload gels + tray sheets, inspect and edit
+    lane calls interactively, export typing results."""
+    model_path = model or os.environ.get("SSP_MODEL") or DEFAULT_MODEL_PATH
+    if not os.path.isfile(model_path):
+        raise click.ClickException(
+            f"model not found: {model_path}\n"
+            "Pass --model or download the GelGenie Universal ONNX model:\n"
+            "  mkdir -p ~/.cache/ssptyping/models && curl -sL -o "
+            "~/.cache/ssptyping/models/unet_dec_21_epoch_579.onnx \\\n"
+            "    https://huggingface.co/mattaq/GelGenie-Universal-Dec-2023/"
+            "resolve/main/onnx_checkpoints/unet_dec_21_epoch_579.onnx")
+
+    from ssp.webapp import AppConfig
+    config = AppConfig(model_path=model_path,
+                       data_dir=data_dir or DEFAULT_DATA_DIR)
+
+    if not no_browser:
+        import threading
+        import webbrowser
+        shown = "localhost" if host in ("0.0.0.0", "127.0.0.1") else host
+        url = f"http://{shown}:{port}/"
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+        click.echo(f"opening {url} ...")
+
+    click.echo(f"serving on http://{host}:{port}  (data: {config.data_dir})")
+    _run_server(config, host, port)
+
+
 if __name__ == "__main__":
     cli()
