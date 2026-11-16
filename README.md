@@ -67,7 +67,7 @@ Model resolution order: `--model` → `$SSP_MODEL` → cached default
   images (170/170 bands, zero misses/false positives on G_26160)
 - Typing verified end-to-end on G_26160 + FLClasseI (class I, 96 lanes):
   CLI, web UI and tests agree; ambiguity groups hand-checked against the sheet
-- Test suite: `cd python-gelgenie && pytest -q` (149 tests; real-model tests
+- Test suite: `cd python-gelgenie && pytest` (149 tests; real-model tests
   need the cached ONNX model + `qupath-gelgenie/testdata/` fixtures)
 
 ## License & redistribution posture
