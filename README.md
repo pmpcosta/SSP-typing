@@ -27,6 +27,11 @@ Standalone pipeline — no QuPath, no PyTorch at runtime:
   fine-tuning; not used at runtime)
 - `qupath-gelgenie/` — the original Java QuPath extension (reference only)
 
+Upstream GelGenie documentation assets (notebooks, screenshots, presentations,
+sample gel images, training logs) were removed from this repository **and its
+history** to keep it lean and free of lab data; the original GelGenie repository
+retains them. Branding (`logo/`) and functional code resources are kept.
+
 ## Install
 
     cd python-gelgenie
