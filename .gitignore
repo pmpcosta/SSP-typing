@@ -139,6 +139,12 @@ dmypy.json
 # Data Location
 data/*
 scratch/scratch_data/*
+# Private validation fixtures (vendor sheets/gel images — never commit; see $SSP_TESTDATA_DIR)
+/testdata
+
+# Local agent tooling (plans, MCP config — never publish)
+.hermes/
+.serena/
 
 samples/
 node_modules/

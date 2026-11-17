@@ -26,7 +26,7 @@ from ssp.typing_engine import TypingResult, type_sample
 
 TESTDATA = Path(os.environ.get(
     'SSP_TESTDATA_DIR',
-    str(Path(__file__).resolve().parents[2] / 'qupath-gelgenie' / 'testdata')))
+    str(Path(__file__).resolve().parents[2] / 'testdata')))
 
 
 def _lane(mix, positive, valid=True):

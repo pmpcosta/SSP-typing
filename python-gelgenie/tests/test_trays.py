@@ -24,7 +24,7 @@ from ssp.trays import Tray, TrayLane, load_tray_xlsx
 
 TESTDATA = Path(os.environ.get(
     'SSP_TESTDATA_DIR',
-    str(Path(__file__).resolve().parents[2] / 'qupath-gelgenie' / 'testdata')))
+    str(Path(__file__).resolve().parents[2] / 'testdata')))
 FLC = TESTDATA / 'FLClasseI.xlsx'
 
 requires_sheet = pytest.mark.skipif(not FLC.exists(), reason=f'{FLC} not present')

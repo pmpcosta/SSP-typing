@@ -25,12 +25,14 @@ Standalone pipeline — no QuPath, no PyTorch at runtime:
   - `cli.py` — `ssp-typing` entry point
 - `python-gelgenie/gelgenie/` — upstream GelGenie training pipeline (kept for
   fine-tuning; not used at runtime)
-- `qupath-gelgenie/` — the original Java QuPath extension (reference only)
 
 Upstream GelGenie documentation assets (notebooks, screenshots, presentations,
-sample gel images, training logs) were removed from this repository **and its
-history** to keep it lean and free of lab data; the original GelGenie repository
-retains them. Branding (`logo/`) and functional code resources are kept.
+sample gel images, training logs), the original Java QuPath extension
+(`qupath-gelgenie/`) and its extension-manager catalog were removed from this
+repository **and its history** to keep it lean and free of lab data; the
+original GelGenie repository retains them (https://github.com/mattaq31/GelGenie).
+`ssp/` is a pixel-exact port of the extension's inference path. Branding
+(`logo/`) is kept.
 
 ## Install
 
@@ -73,9 +75,10 @@ Model resolution order: `--model` → `$SSP_MODEL` → cached default
   CLI, web UI and tests agree; ambiguity groups hand-checked against the sheet
 - Test suite: `cd python-gelgenie && pytest` (149 tests; real-gel tests
   skip unless fixtures are present). Validation fixtures (gel image, vendor
-  tray sheet, expected bands) are NOT in this repo — point `$SSP_TESTDATA_DIR`
-  at a private directory holding `G_26160.jpg`, `FLClasseI.xlsx` and
-  `ssp_bands_G26160.json` to run them; the ONNX model auto-downloads
+  tray sheet, expected bands) are NOT in this repo — put them in `testdata/`
+  at the repo root (gitignored) or point `$SSP_TESTDATA_DIR` at a private
+  directory holding `G_26160.jpg`, `FLClasseI.xlsx` and `ssp_bands_G26160.json`
+  to run them; the ONNX model auto-downloads
 
 ## License & redistribution posture
 
