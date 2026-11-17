@@ -15,13 +15,16 @@
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from ssp.trays import Tray, TrayLane, load_tray_xlsx
 
-TESTDATA = Path(__file__).resolve().parents[2] / 'qupath-gelgenie' / 'testdata'
+TESTDATA = Path(os.environ.get(
+    'SSP_TESTDATA_DIR',
+    str(Path(__file__).resolve().parents[2] / 'qupath-gelgenie' / 'testdata')))
 FLC = TESTDATA / 'FLClasseI.xlsx'
 
 requires_sheet = pytest.mark.skipif(not FLC.exists(), reason=f'{FLC} not present')

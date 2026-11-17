@@ -28,7 +28,9 @@ from ssp.cli import cli
 from ssp.inference import GelGenieONNX
 from ssp.trays import Tray, TrayLane
 
-TESTDATA = Path(__file__).resolve().parents[2] / 'qupath-gelgenie' / 'testdata'
+TESTDATA = Path(os.environ.get(
+    'SSP_TESTDATA_DIR',
+    str(Path(__file__).resolve().parents[2] / 'qupath-gelgenie' / 'testdata')))
 FLC = TESTDATA / 'FLClasseI.xlsx'
 G_IMG = TESTDATA / 'G_26160.jpg'
 MODEL = Path(os.path.expanduser('~/.cache/ssptyping/models/unet_dec_21_epoch_579.onnx'))

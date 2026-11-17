@@ -15,6 +15,7 @@
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,9 @@ from ssp.analysis import GelAnalysis, LaneCall, analyse_gel
 from ssp.trays import Tray, TrayLane, load_tray_xlsx
 from ssp.typing_engine import TypingResult, type_sample
 
-TESTDATA = Path(__file__).resolve().parents[2] / 'qupath-gelgenie' / 'testdata'
+TESTDATA = Path(os.environ.get(
+    'SSP_TESTDATA_DIR',
+    str(Path(__file__).resolve().parents[2] / 'qupath-gelgenie' / 'testdata')))
 
 
 def _lane(mix, positive, valid=True):

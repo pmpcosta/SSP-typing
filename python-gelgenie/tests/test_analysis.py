@@ -16,6 +16,7 @@
 
 import json
 import math
+import os
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,9 @@ from ssp.analysis import (
 from ssp.bands import Band
 from ssp.trays import Tray, TrayLane
 
-TESTDATA = Path(__file__).resolve().parents[2] / 'qupath-gelgenie' / 'testdata'
+TESTDATA = Path(os.environ.get(
+    'SSP_TESTDATA_DIR',
+    str(Path(__file__).resolve().parents[2] / 'qupath-gelgenie' / 'testdata')))
 
 
 def _band(x, y, area=300):

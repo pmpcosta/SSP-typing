@@ -14,6 +14,7 @@
  * limitations under the License.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,9 @@ import pytest
 from ssp.trays import load_tray_xlsx
 from ssp.trays.specificities import SpecificitySet, family_of, parse_specificities
 
-TESTDATA = Path(__file__).resolve().parents[2] / 'qupath-gelgenie' / 'testdata'
+TESTDATA = Path(os.environ.get(
+    'SSP_TESTDATA_DIR',
+    str(Path(__file__).resolve().parents[2] / 'qupath-gelgenie' / 'testdata')))
 FLC = TESTDATA / 'FLClasseI.xlsx'
 requires_sheet = pytest.mark.skipif(not FLC.exists(), reason='FLC sheet not present')
 

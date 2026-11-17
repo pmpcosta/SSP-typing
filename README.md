@@ -25,8 +25,7 @@ Standalone pipeline — no QuPath, no PyTorch at runtime:
   - `cli.py` — `ssp-typing` entry point
 - `python-gelgenie/gelgenie/` — upstream GelGenie training pipeline (kept for
   fine-tuning; not used at runtime)
-- `qupath-gelgenie/` — the original Java QuPath extension (reference only;
-  `testdata/` holds validation images, tray sheets and expected outputs)
+- `qupath-gelgenie/` — the original Java QuPath extension (reference only)
 
 ## Install
 
@@ -67,8 +66,11 @@ Model resolution order: `--model` → `$SSP_MODEL` → cached default
   images (170/170 bands, zero misses/false positives on G_26160)
 - Typing verified end-to-end on G_26160 + FLClasseI (class I, 96 lanes):
   CLI, web UI and tests agree; ambiguity groups hand-checked against the sheet
-- Test suite: `cd python-gelgenie && pytest` (149 tests; real-model tests
-  need the cached ONNX model + `qupath-gelgenie/testdata/` fixtures)
+- Test suite: `cd python-gelgenie && pytest` (149 tests; real-gel tests
+  skip unless fixtures are present). Validation fixtures (gel image, vendor
+  tray sheet, expected bands) are NOT in this repo — point `$SSP_TESTDATA_DIR`
+  at a private directory holding `G_26160.jpg`, `FLClasseI.xlsx` and
+  `ssp_bands_G26160.json` to run them; the ONNX model auto-downloads
 
 ## License & redistribution posture
 
@@ -77,11 +79,11 @@ Model resolution order: `--model` → `$SSP_MODEL` → cached default
 - **Model weights**: the GelGenie HuggingFace zoo (incl. the default
   Universal model) is published under Apache-2.0 — redistribution permitted
   with attribution.
-- **Vendor tray sheets are NOT redistributable by default**: files like
-  `FLClasseI.xlsx` are Olerup kit data. They are committed under
-  `qupath-gelgenie/testdata/` solely as test fixtures for this private
-  repository — check redistribution rights with the vendor before making
-  this repo public or shipping the sheets in any distribution.
+- **Vendor tray sheets are NOT redistributable**: files like `FLClasseI.xlsx`
+  are Olerup kit data, and gel images may be confidential lab data. They are
+  NOT committed to this repository and were scrubbed from its git history;
+  keep them outside the repo (see `$SSP_TESTDATA_DIR` above) and check
+  redistribution rights with the vendor before shipping any such data.
 - **Results are advisory / research use only.** This software is not IVD
   certified or clinically validated. Any use for real donor/patient typing
   decisions brings IVD software regulation into scope and must not happen on
