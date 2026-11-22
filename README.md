@@ -21,7 +21,8 @@ Standalone pipeline — no QuPath, no PyTorch at runtime:
   - `bands.py` — mask → connected-component bands → lanes
   - `trays/` — vendor tray-sheet loader (`.xlsx`) + allele specificity parser
     (ranges, typos, family tokens, "All, except …")
-  - `analysis.py` — lane clustering with empty-lane recovery, panel-aware
+  - `analysis.py` — lane assignment (from a layout's lane map, else gap
+    clustering with empty-lane recovery), panel-aware
     control-band fitting (smile correction), bp calibration, band classification
   - `typing_engine.py` — allele-pair scoring with full ambiguity reporting,
     invalid-lane QC
@@ -56,8 +57,12 @@ CLI (batch):
     #    (mix numbers on the result); if a cut is off, edit pre/layout.json
     #    and re-run with --layout pre/layout.json (layouts are reusable across
     #    photos from the same imager; they rescale to the image size)
-    # 2. type the joined strip
-    ssp-typing type pre/stitched.png --tray FLClasseI.xlsx -o out/
+    # 2. type the joined strip; --lanes takes lane positions from the layout
+    #    instead of guessing them from band gaps (robust to empty lanes
+    #    next to a strip boundary)
+    ssp-typing type pre/stitched.png --lanes pre/lanes.json --tray FLClasseI.xlsx -o out/
+    # or in one go, once a layout is confirmed:
+    ssp-typing type raw.jpg --layout pre/layout.json --tray FLClasseI.xlsx -o out/
     # -> out/mask.png, out/typing.json, out/report.txt   (~5 s on CPU)
 
 Web app (interactive):
@@ -87,9 +92,10 @@ Model resolution order: `--model` → `$SSP_MODEL` → cached default
   CLI, web UI and tests agree; ambiguity groups hand-checked against the sheet
 - Layout: typing the raw G_26160 photo through `preprocess` (hand-fitted
   layout) gives the same calls, positive/invalid lanes and panels as typing
-  the hand-joined image; synthetic rotated/offset gels cover lane identity
+  the hand-joined image, both from the joined strip and via `type --layout`
+  lane geometry; synthetic rotated/offset gels cover lane identity
   and order for both 3×32 and 6×16
-- Test suite: `cd python-gelgenie && pytest` (191 tests; real-gel tests
+- Test suite: `cd python-gelgenie && pytest` (205 tests; real-gel tests
   skip unless fixtures are present). Validation fixtures (gel image, vendor
   tray sheet, expected bands) are NOT in this repo — put them in `testdata/`
   at the repo root (gitignored) or point `$SSP_TESTDATA_DIR` at a private

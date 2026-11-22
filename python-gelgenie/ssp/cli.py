@@ -53,6 +53,7 @@ from ssp.layout import (
     STITCHED,
     Layout,
     LayoutError,
+    Manifest,
     is_prestitched,
     preset_layout,
     render_overlay,
@@ -282,21 +283,51 @@ def load_tray(path: str) -> Tray:
               help="Override bp calibration slope (px per ln(bp)); default auto-calibrates.")
 @click.option("--match-tol", type=float, default=0.25, show_default=True,
               help="Relative tolerance for matching a band to its lane's product size.")
+@click.option("--layout", "layout_path", type=click.Path(exists=True, dir_okay=False),
+              default=None,
+              help="IMAGE is a raw gel photo: join it with this layout.json (from "
+                   "`preprocess`) first, and take lanes from the known geometry.")
+@click.option("--lanes", "lanes_path", type=click.Path(exists=True, dir_okay=False),
+              default=None,
+              help="IMAGE is a joined strip from `preprocess`: take lanes from its "
+                   "lanes.json instead of inferring them from band gaps.")
 def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
-             min_area, lane_gap, slope_b, match_tol) -> None:
+             min_area, lane_gap, slope_b, match_tol, layout_path, lanes_path) -> None:
     """Segment a gel image and interpret it against an SSP tray definition.
 
     Writes mask.png, typing.json (machine-readable) and report.txt (human
-    summary) into the output directory, and echoes the summary.
+    summary) into the output directory, and echoes the summary. With
+    --layout, the joined strip (stitched.png) and lanes.json are written too,
+    and mask.png refers to the joined strip.
     """
+    if layout_path and lanes_path:
+        raise click.UsageError("use either --layout or --lanes, not both")
     raw = np.asarray(imageio.imread(image))
-    if dtype_max is None:
-        dtype_max = _infer_dtype_max(raw)
 
     try:
         tray_obj = load_tray(tray)
     except ValueError as e:
         raise click.ClickException(str(e))
+
+    manifest: Optional[Manifest] = None
+    try:
+        if layout_path:
+            layout = Layout.load_json(layout_path)
+            raw, manifest = stitch(raw, layout, expected_lanes=len(tray_obj.lanes))
+        elif lanes_path:
+            manifest = Manifest.load_json(lanes_path)
+            size = (raw.shape[1], raw.shape[0])
+            if not manifest.stitched_input and tuple(manifest.image_size) != size:
+                raise LayoutError(
+                    f"{os.path.basename(lanes_path)} describes a "
+                    f"{manifest.image_size[0]}x{manifest.image_size[1]} image but "
+                    f"{os.path.basename(image)} is {size[0]}x{size[1]}")
+    except LayoutError as e:
+        raise click.ClickException(f"layout: {e}")
+    lane_map = manifest.to_lane_map() if manifest else None
+
+    if dtype_max is None:
+        dtype_max = _infer_dtype_max(raw)
     model_obj = GelGenieONNX(model_path=str(_resolve_model(model)))
     mask, bands = segment_image(
         raw, model_obj, invert=invert,
@@ -304,7 +335,7 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
     )
     try:
         ga = analyse_gel(bands, tray_obj, lane_gap=lane_gap, slope_b=slope_b,
-                         match_tol=match_tol)
+                         match_tol=match_tol, lane_map=lane_map)
     except ValueError as e:
         raise click.ClickException(str(e))
     result = type_sample(ga, tray_obj)
@@ -312,12 +343,20 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
     os.makedirs(output, exist_ok=True)
     mask_path = os.path.join(output, "mask.png")
     imageio.imwrite(mask_path, (mask * 255).astype(np.uint8))
+    extra_paths = []
+    if layout_path:
+        stitched_path = os.path.join(output, "stitched.png")
+        imageio.imwrite(stitched_path, raw)
+        lanes_out = os.path.join(output, "lanes.json")
+        manifest.save_json(lanes_out)
+        extra_paths = [("joined", stitched_path), ("lanes", lanes_out)]
 
     payload = {
         "image": os.path.basename(image),
         "tray": tray_obj.name,
         "analysis": {
             "slope_b": round(ga.slope_b, 2),
+            "lane_assignment": "layout" if lane_map else "band-gaps",
             "panels": [list(p) for p in ga.panels],
             "warnings": ga.warnings,
             "invalid_lanes": [l.mix for l in ga.lanes if not l.valid],
@@ -337,6 +376,8 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
     click.echo(f"\n  mask   -> {mask_path}")
     click.echo(f"  typing -> {typing_path}")
     click.echo(f"  report -> {report_path}")
+    for name, p in extra_paths:
+        click.echo(f"  {name:6s} -> {p}")
 
 
 @cli.command()

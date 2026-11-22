@@ -350,6 +350,48 @@ class Manifest:
         strips the boundary is the middle of the gap."""
         return [(a.x1 + b.x0) / 2.0 for a, b in zip(self.lanes, self.lanes[1:])]
 
+    def to_lane_map(self):
+        """Lane slots and per-strip panels for :func:`ssp.analysis.analyse_gel`;
+        ``None`` for an already-joined input (geometry unknown)."""
+        from ssp.analysis import LaneMap
+
+        if self.stitched_input or not self.lanes:
+            return None
+        return LaneMap(slots=[(l.x0, l.x1) for l in self.lanes],
+                       panels=[(s.first_mix - 1, s.last_mix - 1) for s in self.strips])
+
+    @classmethod
+    def from_dict(cls, d: Dict) -> "Manifest":
+        try:
+            if d.get("version", LAYOUT_VERSION) != LAYOUT_VERSION:
+                raise LayoutError(f"unsupported lanes.json version {d.get('version')!r}")
+            strips = [Strip(block=int(s["block"]), row=int(s["row"]), x0=int(s["x0"]),
+                            x1=int(s["x1"]), height=int(s["height"]),
+                            first_mix=int(s["first_mix"]), last_mix=int(s["last_mix"]))
+                      for s in d.get("strips", [])]
+            lanes = [LaneSlot(mix=int(l["mix"]), block=int(l["block"]), row=int(l["row"]),
+                              x0=float(l["x0"]), x1=float(l["x1"]))
+                     for l in d.get("lanes", [])]
+            size = (int(d["image_size"][0]), int(d["image_size"][1]))
+        except (KeyError, TypeError, ValueError, IndexError, AttributeError) as e:
+            raise LayoutError(f"invalid lanes.json: {e}") from None
+        if [l.mix for l in lanes] != list(range(1, len(lanes) + 1)):
+            raise LayoutError("invalid lanes.json: mixes must run 1..N in order")
+        return cls(image_size=size, strips=strips, lanes=lanes,
+                   stitched_input=bool(d.get("stitched_input", False)))
+
+    @classmethod
+    def load_json(cls, path: str) -> "Manifest":
+        try:
+            with open(path) as f:
+                return cls.from_dict(json.load(f))
+        except json.JSONDecodeError as e:
+            raise LayoutError(f"{path}: not valid JSON ({e})") from None
+
+    def save_json(self, path: str) -> None:
+        with open(path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+
     def to_dict(self) -> Dict:
         return {"version": LAYOUT_VERSION, "image_size": list(self.image_size),
                 "stitched_input": self.stitched_input,

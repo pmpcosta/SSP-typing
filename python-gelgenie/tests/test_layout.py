@@ -38,6 +38,7 @@ from ssp.layout import (
     Block,
     Layout,
     LayoutError,
+    Manifest,
     Row,
     is_prestitched,
     preset_layout,
@@ -57,8 +58,10 @@ def _band_y(mix: int, global_row: int) -> int:
     return 20 + 50 * (mix % 2) + 10 * global_row
 
 
-def _upright_block(n_rows, lanes, first_mix, first_row, empty_wells=0):
-    """Upright gel piece: wells on every slot, one band per used lane."""
+def _upright_block(n_rows, lanes, first_mix, first_row, empty_wells=0, band_ys=None):
+    """Upright gel piece: wells on every slot, bands per used lane at
+    ``band_ys(mix, global_row)`` (default: the identity-encoding height)."""
+    band_ys = band_ys or (lambda m, r: [_band_y(m, r)])
     slots = lanes + empty_wells
     img = np.full((n_rows * ROW_H, slots * PITCH), BG, dtype=float)
     mix = first_mix
@@ -68,8 +71,8 @@ def _upright_block(n_rows, lanes, first_mix, first_row, empty_wells=0):
             x0 = s * PITCH + 5
             img[top + 4:top + 9, x0:x0 + PITCH - 10] = WELL
             if s >= empty_wells:
-                y = top + _band_y(mix, first_row + r)
-                img[y - 1:y + 2, x0:x0 + PITCH - 10] = BAND
+                for y in band_ys(mix, first_row + r):
+                    img[top + y - 1:top + y + 2, x0:x0 + PITCH - 10] = BAND
                 mix += 1
     return img
 
@@ -96,11 +99,12 @@ def _gel_3x32(angle_deg=3.0):
     return canvas.astype(np.uint8), layout
 
 
-def _gel_6x16():
+def _gel_6x16(band_ys=None):
     """Two pieces: the right one sits lower, is tilted, and has 3 empty wells."""
     canvas = np.full((560, 800), BG)
-    left = _upright_block(3, 16, first_mix=1, first_row=0)
-    right = _upright_block(3, 16, first_mix=49, first_row=3, empty_wells=3)
+    left = _upright_block(3, 16, first_mix=1, first_row=0, band_ys=band_ys)
+    right = _upright_block(3, 16, first_mix=49, first_row=3, empty_wells=3,
+                           band_ys=band_ys)
     q0 = _place(canvas, left, AffineTransform(translation=(20, 20)))
     q1 = _place(canvas, right, AffineTransform(rotation=np.deg2rad(-2), translation=(380, 45)))
     rows0 = [Row(top=i / 3, bottom=(i + 1) / 3, lanes=16) for i in range(3)]
@@ -407,6 +411,147 @@ def test_cli_preprocess_lane_count_mismatch_is_clean_error(tmp_path):
     assert r.exit_code == 0, r.output
 
 
+# ---------------------------------------------------------------- manifest
+
+def test_manifest_json_roundtrip_and_lane_map(tmp_path):
+    gel, layout = _gel_6x16()
+    _, man = stitch(gel, layout)
+    p = tmp_path / "lanes.json"
+    man.save_json(str(p))
+    back = Manifest.load_json(str(p))
+    lm = back.to_lane_map()
+    assert len(lm.slots) == 96
+    assert lm.panels == [(0, 15), (16, 31), (32, 47), (48, 63), (64, 79), (80, 95)]
+    assert lm.centers == pytest.approx([l.center for l in man.lanes], abs=0.01)
+
+
+def test_manifest_of_joined_input_has_no_lane_map():
+    img = np.zeros((10, 100), dtype=np.uint8)
+    _, man = stitch(img, stitched_layout((100, 10)))
+    assert Manifest.from_dict(man.to_dict()).to_lane_map() is None
+
+
+@pytest.mark.parametrize("payload, msg", [
+    ({"version": 7, "image_size": [1, 1]}, "unsupported"),
+    ({"lanes": []}, "invalid lanes.json"),
+    ({"image_size": [10, 10], "lanes": [{"mix": 2, "block": 0, "row": 0, "x0": 0, "x1": 1}]},
+     "1..N"),
+])
+def test_bad_manifest_rejected(payload, msg):
+    with pytest.raises(LayoutError, match=msg):
+        Manifest.from_dict(payload)
+
+
+# ---------------------------------------------------------------- type with known layout
+
+CTRL_Y, PROD_Y = 110, 55  # product 55 px above control: 256*exp(55/81) ~ 504 bp
+EMPTY = 49  # first lane after the seam: undetectable from band gaps alone
+POSITIVE = {m for m in range(1, 97) if m % 7 == 0} - {EMPTY}
+
+
+def _typing_gel():
+    def band_ys(mix, _row):
+        if mix == EMPTY:
+            return []
+        return [CTRL_Y, PROD_Y] if mix in POSITIVE else [CTRL_Y]
+    return _gel_6x16(band_ys=band_ys)
+
+
+def _typing_tray(path):
+    from ssp.trays import Tray, TrayLane
+    tray = Tray(name="synth96", lanes=[
+        TrayLane(mix=m, locus="A", product_bp=[500], control_bp=256,
+                 serotypes="", specificities="A*01:01") for m in range(1, 97)])
+    tray.save_json(str(path))
+
+
+@pytest.fixture
+def fake_model(monkeypatch, tmp_path):
+    import ssp.cli as cli_mod
+    from test_cli_type import _fake_model_factory
+    monkeypatch.setattr(cli_mod, "GelGenieONNX", _fake_model_factory)
+    m = tmp_path / "model.onnx"
+    m.write_bytes(b"x")
+    return m
+
+
+def _check_typing(out):
+    payload = json.loads((out / "typing.json").read_text())
+    a = payload["analysis"]
+    assert a["lane_assignment"] == "layout"
+    assert a["invalid_lanes"] == [EMPTY]
+    assert set(a["positive_lanes"]) == POSITIVE
+    assert a["panels"] == [[1, 16], [17, 32], [33, 48], [49, 64], [65, 80], [81, 96]]
+    return payload
+
+
+def test_cli_type_raw_photo_with_layout(tmp_path, fake_model):
+    gel, layout = _typing_gel()
+    img, lay, tray = tmp_path / "raw.png", tmp_path / "layout.json", tmp_path / "tray.json"
+    imageio.imwrite(img, gel)
+    layout.save_json(str(lay))
+    _typing_tray(tray)
+    out = tmp_path / "out"
+    r = CliRunner().invoke(cli, ["type", str(img), "-t", str(tray), "-m", str(fake_model),
+                                 "--layout", str(lay), "-o", str(out)])
+    assert r.exit_code == 0, r.output + repr(r.exception)
+    _check_typing(out)
+    stitched = imageio.imread(out / "stitched.png")
+    assert imageio.imread(out / "mask.png").shape == stitched.shape[:2]
+    assert json.loads((out / "lanes.json").read_text())["image_size"] == \
+        [stitched.shape[1], stitched.shape[0]]
+    # without the layout geometry the empty lane after the seam breaks numbering
+    r = CliRunner().invoke(cli, ["type", str(out / "stitched.png"), "-t", str(tray),
+                                 "-m", str(fake_model), "-o", str(tmp_path / "gaps")])
+    assert r.exit_code == 1 and "expected 96" in r.output
+
+
+def test_cli_preprocess_then_type_with_lanes(tmp_path, fake_model):
+    gel, layout = _typing_gel()
+    img, lay, tray = tmp_path / "raw.png", tmp_path / "layout.json", tmp_path / "tray.json"
+    imageio.imwrite(img, gel)
+    layout.save_json(str(lay))
+    _typing_tray(tray)
+    pre = tmp_path / "pre"
+    r = CliRunner().invoke(cli, ["preprocess", str(img), "--layout", str(lay), "-o", str(pre)])
+    assert r.exit_code == 0, r.output
+    out = tmp_path / "out"
+    r = CliRunner().invoke(cli, ["type", str(pre / "stitched.png"), "-t", str(tray),
+                                 "-m", str(fake_model), "--lanes", str(pre / "lanes.json"),
+                                 "-o", str(out)])
+    assert r.exit_code == 0, r.output + repr(r.exception)
+    _check_typing(out)
+    assert not (out / "stitched.png").exists()
+
+
+def test_cli_type_lanes_must_match_image(tmp_path, fake_model):
+    gel, layout = _typing_gel()
+    _, man = stitch(gel, layout)
+    lanes, tray, img = tmp_path / "lanes.json", tmp_path / "tray.json", tmp_path / "x.png"
+    man.save_json(str(lanes))
+    _typing_tray(tray)
+    imageio.imwrite(img, np.zeros((50, 500), dtype=np.uint8))
+    r = CliRunner().invoke(cli, ["type", str(img), "-t", str(tray), "-m", str(fake_model),
+                                 "--lanes", str(lanes), "-o", str(tmp_path / "o")])
+    assert r.exit_code == 1 and "describes a" in r.output
+    r = CliRunner().invoke(cli, ["type", str(img), "-t", str(tray), "-m", str(fake_model),
+                                 "--lanes", str(lanes), "--layout", str(lanes),
+                                 "-o", str(tmp_path / "o")])
+    assert r.exit_code == 2 and "not both" in r.output
+
+
+def test_cli_type_layout_lane_count_must_match_tray(tmp_path, fake_model):
+    gel, layout = _typing_gel()
+    img, lay, tray = tmp_path / "raw.png", tmp_path / "layout.json", tmp_path / "tray.json"
+    imageio.imwrite(img, gel)
+    layout.blocks[1].rows[2].lanes = 15
+    layout.save_json(str(lay))
+    _typing_tray(tray)
+    r = CliRunner().invoke(cli, ["type", str(img), "-t", str(tray), "-m", str(fake_model),
+                                 "--layout", str(lay), "-o", str(tmp_path / "o")])
+    assert r.exit_code == 1 and "95 lanes, expected 96" in r.output
+
+
 # ---------------------------------------------------------------- private real gels
 
 TESTDATA = Path(os.environ.get(
@@ -433,19 +578,25 @@ def test_real_gel_layouts_stitch_96_lanes(layout_path):
          and (TESTDATA / 'FLClasseI.xlsx').exists() and MODEL.exists()),
     reason='G_26160 raw photo + layout, tray sheet or model not present')
 def test_g26160_raw_photo_types_like_hand_stitched(tmp_path):
-    """Typing the auto-joined raw photo must match typing the hand-joined image."""
+    """Typing the raw photo (joined, and via --layout geometry) must match
+    typing the hand-joined image."""
     raw = np.asarray(imageio.imread(PRE / 'G_26160_before.jpg'))
     stitched, _ = stitch(raw, Layout.load_json(str(PRE / 'G_26160.layout.json')), 96)
     mine = tmp_path / 'mine.png'
     imageio.imwrite(mine, stitched)
     results = {}
-    for tag, img in (('mine', mine), ('ref', TESTDATA / 'G_26160.jpg')):
+    runs = (('mine', mine, []), ('ref', TESTDATA / 'G_26160.jpg', []),
+            ('layout', PRE / 'G_26160_before.jpg', ['--layout', str(PRE / 'G_26160.layout.json')]))
+    for tag, img, extra in runs:
         out = tmp_path / tag
         r = CliRunner().invoke(cli, ['type', str(img), '-t', str(TESTDATA / 'FLClasseI.xlsx'),
-                                     '-o', str(out)])
+                                     '-o', str(out)] + extra)
         assert r.exit_code == 0, r.output
         results[tag] = json.loads((out / 'typing.json').read_text())
-    a, b = results['mine'], results['ref']
-    assert a['typing'] == b['typing']
-    for k in ('positive_lanes', 'invalid_lanes', 'panels', 'warnings'):
-        assert a['analysis'][k] == b['analysis'][k], k
+    ref = results['ref']
+    for tag in ('mine', 'layout'):
+        a = results[tag]
+        assert a['typing'] == ref['typing'], tag
+        for k in ('positive_lanes', 'invalid_lanes', 'panels', 'warnings'):
+            assert a['analysis'][k] == ref['analysis'][k], (tag, k)
+    assert results['layout']['analysis']['lane_assignment'] == 'layout'
