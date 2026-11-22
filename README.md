@@ -5,12 +5,17 @@ Main code repository for our SSP HLA typing app, Olerup style, derived from
 
 Standalone pipeline — no QuPath, no PyTorch at runtime:
 
-    gel image → ONNX segmentation → lanes/bands → control-normalized bp sizes
+    raw gel photo → layout (cut rows, join into one 96-lane strip)
+              → ONNX segmentation → lanes/bands → control-normalized bp sizes
               → per-lane positivity → Olerup-style allele-pair typing
 
 ## Layout
 
 - `python-gelgenie/ssp/` — the standalone app (this is where development happens)
+  - `layout.py` — rearranges raw gel photos (3×32 single gel, or 6×16 = two
+    gel pieces of 3×16) into the single joined strip typing expects:
+    per-piece perspective rectification, row cuts, lane manifest, overlay
+    images for visual confirmation
   - `preprocessing.py`, `inference.py` — pixel-exact port of the QuPath/DJL
     inference path (pad-to-divisible-by-32, normalize, ONNX Runtime, argmax)
   - `bands.py` — mask → connected-component bands → lanes
@@ -45,7 +50,14 @@ original GelGenie repository retains them (https://github.com/mattaq31/GelGenie)
 
 CLI (batch):
 
-    ssp-typing type gel.jpg --tray FLClasseI.xlsx -o out/
+    # 1. raw gel photo -> joined 96-lane strip (skip if already joined)
+    ssp-typing preprocess raw.jpg --preset 3x32 -o pre/      # or --preset 6x16
+    #    check pre/overlay.png (cuts on the original) and pre/stitched_lanes.png
+    #    (mix numbers on the result); if a cut is off, edit pre/layout.json
+    #    and re-run with --layout pre/layout.json (layouts are reusable across
+    #    photos from the same imager; they rescale to the image size)
+    # 2. type the joined strip
+    ssp-typing type pre/stitched.png --tray FLClasseI.xlsx -o out/
     # -> out/mask.png, out/typing.json, out/report.txt   (~5 s on CPU)
 
 Web app (interactive):
@@ -73,12 +85,18 @@ Model resolution order: `--model` → `$SSP_MODEL` → cached default
   images (170/170 bands, zero misses/false positives on G_26160)
 - Typing verified end-to-end on G_26160 + FLClasseI (class I, 96 lanes):
   CLI, web UI and tests agree; ambiguity groups hand-checked against the sheet
-- Test suite: `cd python-gelgenie && pytest` (149 tests; real-gel tests
+- Layout: typing the raw G_26160 photo through `preprocess` (hand-fitted
+  layout) gives the same calls, positive/invalid lanes and panels as typing
+  the hand-joined image; synthetic rotated/offset gels cover lane identity
+  and order for both 3×32 and 6×16
+- Test suite: `cd python-gelgenie && pytest` (191 tests; real-gel tests
   skip unless fixtures are present). Validation fixtures (gel image, vendor
   tray sheet, expected bands) are NOT in this repo — put them in `testdata/`
   at the repo root (gitignored) or point `$SSP_TESTDATA_DIR` at a private
   directory holding `G_26160.jpg`, `FLClasseI.xlsx` and `ssp_bands_G26160.json`
-  to run them; the ONNX model auto-downloads
+  (plus `preprocessing/<name>_before.jpg` with `<name>.layout.json` for the
+  layout tests) to run them; model tests also need
+  `ssp-typing models download` first
 
 ## License & redistribution posture
 
