@@ -363,9 +363,9 @@ def test_cli_preprocess_preset_warns_to_check(tmp_path):
     img = tmp_path / "gel.png"
     imageio.imwrite(img, gel)
     r = CliRunner().invoke(cli, ["preprocess", str(img), "--preset", "3x32",
-                                 "-o", str(tmp_path / "o")])
+                                 "--no-detect", "-o", str(tmp_path / "o")])
     assert r.exit_code == 0, r.output
-    assert "check overlay.png" in r.output
+    assert "even split" in r.output and "check overlay.png" in r.output
 
 
 def test_cli_preprocess_passes_through_joined_strip(tmp_path):

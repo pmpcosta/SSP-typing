@@ -60,6 +60,7 @@ from ssp.layout import (
     render_stitched,
     stitch,
 )
+from ssp.layout_detect import detect_layout
 from ssp.report import build_report
 from ssp.trays import Tray, load_tray_xlsx
 from ssp.typing_engine import type_sample
@@ -386,10 +387,13 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
               help="Output directory for stitched.png, layout.json, lanes.json "
                    "and the overlay check images.")
 @click.option("--preset", type=click.Choice(list(PRESETS) + [STITCHED]), default=None,
-              help="Starting layout: 3x32 (one gel, 3 rows of 32), 6x16 (two gel "
-                   "pieces side by side, 3 rows of 16 each) or stitched (already "
-                   "joined; copied unchanged). A preset is an even split of the "
-                   "whole photo and normally needs adjusting.")
+              help="Gel format: 3x32 (one gel, 3 rows of 32), 6x16 (two gel pieces "
+                   "side by side, 3 rows of 16 each) or stitched (already joined; "
+                   "copied unchanged). Outlines and row cuts are detected "
+                   "automatically; always confirm them on overlay.png.")
+@click.option("--detect/--no-detect", default=True, show_default=True,
+              help="With --preset: detect gel outlines and row cuts (default), or "
+                   "start from an even split of the whole photo.")
 @click.option("--layout", "layout_path", type=click.Path(exists=True, dir_okay=False),
               default=None, help="Layout JSON to apply (e.g. an adjusted layout.json "
                                  "from an earlier run). Rescaled if the image size differs.")
@@ -397,7 +401,7 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
               help="Expected total lane count; 0 skips the check.")
 @click.option("--gap", type=float, default=None,
               help="Background gap between joined strips in px (default: 2 lane pitches).")
-def preprocess(image, output, preset, layout_path, expected_lanes, gap) -> None:
+def preprocess(image, output, preset, layout_path, detect, expected_lanes, gap) -> None:
     """Rearrange a raw gel photo into a single joined lane strip.
 
     Writes stitched.png (input for `type`), layout.json (the cut geometry;
@@ -410,6 +414,8 @@ def preprocess(image, output, preset, layout_path, expected_lanes, gap) -> None:
         raise click.UsageError("use either --preset or --layout, not both")
     raw = np.asarray(imageio.imread(image))
     size = (raw.shape[1], raw.shape[0])
+    notes: List[str] = []
+    source = "layout file" if layout_path else None
 
     try:
         if layout_path:
@@ -418,8 +424,17 @@ def preprocess(image, output, preset, layout_path, expected_lanes, gap) -> None:
                 click.echo(f"note: layout was made for {layout.image_size[0]}x"
                            f"{layout.image_size[1]}; rescaled to {size[0]}x{size[1]}")
                 layout = layout.scaled_to(size)
+        elif preset and preset != STITCHED and detect:
+            try:
+                det = detect_layout(raw, preset)
+                layout, source = det.layout, "detected"
+                notes += det.warnings
+            except LayoutError as e:
+                layout, source = preset_layout(preset, size), "even split"
+                notes.append(f"automatic detection failed ({e}); using an even split")
         elif preset:
             layout = preset_layout(preset, size)
+            source = "even split"
         elif is_prestitched(size):
             layout = preset_layout(STITCHED, size)
         else:
@@ -428,7 +443,7 @@ def preprocess(image, output, preset, layout_path, expected_lanes, gap) -> None:
                 f"photo; choose --preset ({', '.join(PRESETS)}) or pass --layout")
         if gap is not None:
             layout.gap = gap
-        warnings = layout.validate(expected_lanes or None)
+        warnings = notes + layout.validate(expected_lanes or None)
         stitched, manifest = stitch(raw, layout)
     except LayoutError as e:
         raise click.ClickException(f"layout: {e}")
@@ -453,9 +468,13 @@ def preprocess(image, output, preset, layout_path, expected_lanes, gap) -> None:
         imageio.imwrite(paths["lane check"], render_stitched(stitched, manifest))
         click.echo(f"Joined {len(manifest.strips)} strip(s), {len(manifest.lanes)} lanes "
                    f"-> {stitched.shape[1]}x{stitched.shape[0]}")
-        if preset:
-            click.echo("Preset geometry is an even split of the photo: check overlay.png, "
+        if source == "even split":
+            click.echo("Layout is an even split of the photo: check overlay.png, "
                        "adjust layout.json and re-run with --layout.")
+        elif source == "detected":
+            click.echo("Layout was detected automatically: confirm the cuts and lane "
+                       "numbers on overlay.png before typing; if anything is off, edit "
+                       "layout.json and re-run with --layout.")
     for w in warnings:
         click.echo(f"warning: {w}")
     for name, p in paths.items():

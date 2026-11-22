@@ -16,6 +16,8 @@ Standalone pipeline — no QuPath, no PyTorch at runtime:
     gel pieces of 3×16) into the single joined strip typing expects:
     per-piece perspective rectification, row cuts, lane manifest, overlay
     images for visual confirmation
+  - `layout_detect.py` — automatic first guess of that layout (gel pieces,
+    lane grid, row cuts at the wells, tilt), with warnings where unsure
   - `preprocessing.py`, `inference.py` — pixel-exact port of the QuPath/DJL
     inference path (pad-to-divisible-by-32, normalize, ONNX Runtime, argmax)
   - `bands.py` — mask → connected-component bands → lanes
@@ -53,9 +55,11 @@ CLI (batch):
 
     # 1. raw gel photo -> joined 96-lane strip (skip if already joined)
     ssp-typing preprocess raw.jpg --preset 3x32 -o pre/      # or --preset 6x16
-    #    check pre/overlay.png (cuts on the original) and pre/stitched_lanes.png
-    #    (mix numbers on the result); if a cut is off, edit pre/layout.json
-    #    and re-run with --layout pre/layout.json (layouts are reusable across
+    #    the layout is detected automatically (--no-detect: even split);
+    #    ALWAYS confirm pre/overlay.png (cuts + mix numbers on the original,
+    #    especially the lane numbering at each gel piece's edges) and
+    #    pre/stitched_lanes.png; if anything is off, edit pre/layout.json and
+    #    re-run with --layout pre/layout.json (layouts are reusable across
     #    photos from the same imager; they rescale to the image size)
     # 2. type the joined strip; --lanes takes lane positions from the layout
     #    instead of guessing them from band gaps (robust to empty lanes
@@ -95,13 +99,19 @@ Model resolution order: `--model` → `$SSP_MODEL` → cached default
   the hand-joined image, both from the joined strip and via `type --layout`
   lane geometry; synthetic rotated/offset gels cover lane identity
   and order for both 3×32 and 6×16
-- Test suite: `cd python-gelgenie && pytest` (205 tests; real-gel tests
+- Layout detection: on 7 real gels (3×32 and 6×16, dark and light
+  backgrounds) lane centres sit on the segmented bands (median 0.5–5 px,
+  worst 13.6 px, lane pitch ~42–48 px; G_26160's residual is lens
+  distortion) and lane numbering at every piece edge was checked by eye;
+  fully automatic detect → join → type on G_26160 gives the same calls as
+  the hand-joined image
+- Test suite: `cd python-gelgenie && pytest` (219 tests; real-gel tests
   skip unless fixtures are present). Validation fixtures (gel image, vendor
   tray sheet, expected bands) are NOT in this repo — put them in `testdata/`
   at the repo root (gitignored) or point `$SSP_TESTDATA_DIR` at a private
   directory holding `G_26160.jpg`, `FLClasseI.xlsx` and `ssp_bands_G26160.json`
-  (plus `preprocessing/<name>_before.jpg` with `<name>.layout.json` for the
-  layout tests) to run them; model tests also need
+  (plus `preprocessing/<name>_before.jpg` and optionally a reference
+  `<name>.layout.json` for the layout/detection tests) to run them; model tests also need
   `ssp-typing models download` first
 
 ## License & redistribution posture
