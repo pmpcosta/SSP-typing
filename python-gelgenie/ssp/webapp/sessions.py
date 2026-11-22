@@ -19,7 +19,12 @@ A *session* is one gel image + one tray definition + the full pipeline result,
 persisted under ``<data_dir>/sessions/<sid>/`` so every run is reproducible and
 auditable (a requirement for a clinical-adjacent tool):
 
-    image<ext>            original uploaded image bytes
+    image<ext>            the image that was segmented: the uploaded bytes, or
+                          image.png = the joined strip when a layout was used
+    original<ext>         (layout sessions) the raw gel photo as uploaded
+    layout.json           (layout sessions) the confirmed cut geometry
+    lanes.json            (layout sessions) where each mix sits in image.png;
+                          analysis takes lanes from it instead of band gaps
     mask.png              segmentation mask
     bands.json            raw detected bands (pre-edit; the audit baseline)
     tray.json             normalized tray snapshot (immune to later store edits)
@@ -33,6 +38,12 @@ auditable (a requirement for a clinical-adjacent tool):
 Edits never mutate the segmentation: they are re-applied to the raw bands and
 the analysis/typing are recomputed from scratch, so results are deterministic
 given (bands, tray, params, edits).
+
+Raw gel photos go through a layout step first: the photo is *staged* under
+``<data_dir>/uploads/<uid>/`` (detect / reuse / preview the layout there),
+and the session is created from the staged photo plus the confirmed layout.
+The last confirmed layout per preset is kept in ``<data_dir>/layouts/``.
+Staged uploads are removed once used, and pruned after a day.
 """
 
 from __future__ import annotations
@@ -43,7 +54,9 @@ import mimetypes
 import os
 import re
 import shutil
+import time
 import uuid
+from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +69,17 @@ from ssp.analysis import analyse_gel
 from ssp.bands import Band
 from ssp.cli import _infer_dtype_max, segment_image
 from ssp.inference import GelGenieONNX
+from ssp.layout import (
+    PRESETS,
+    Layout,
+    LayoutError,
+    Manifest,
+    is_prestitched,
+    preset_layout,
+    render_stitched,
+    stitch,
+)
+from ssp.layout_detect import detect_layout
 from ssp.report import build_report
 from ssp.trays import Tray, load_tray_xlsx
 from ssp.typing_engine import type_sample
@@ -64,6 +88,9 @@ _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _BAND_CORE = ("id", "area", "centroid_y", "centroid_x", "bbox", "lane")
 # synthetic (user-added) bands get ids far above any real band id
 SYNTHETIC_ID_BASE = 1_000_000
+UPLOAD_TTL_S = 24 * 3600
+PREVIEW_MAX_W = 3000
+LAYOUT_SOURCES = ("detect", "last", "even")
 
 
 def _now() -> str:
@@ -101,14 +128,23 @@ class AppConfig:
     def trays_dir(self) -> Path:
         return Path(self.data_dir) / "trays"
 
+    @property
+    def uploads_dir(self) -> Path:
+        return Path(self.data_dir) / "uploads"
+
+    @property
+    def layouts_dir(self) -> Path:
+        return Path(self.data_dir) / "layouts"
+
 
 class SessionStore:
     """Creates, loads and edits typing sessions under ``config.data_dir``."""
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        config.sessions_dir.mkdir(parents=True, exist_ok=True)
-        config.trays_dir.mkdir(parents=True, exist_ok=True)
+        for d in (config.sessions_dir, config.trays_dir, config.uploads_dir,
+                  config.layouts_dir):
+            d.mkdir(parents=True, exist_ok=True)
 
     # ---------- tray store ----------
 
@@ -171,6 +207,135 @@ class SessionStore:
             raise ValueError(f"unknown tray {name!r}; upload it first")
         return Tray.load_json(path)
 
+    # ---------- staged uploads + layout step ----------
+
+    def _prune_uploads(self) -> None:
+        cutoff = time.time() - UPLOAD_TTL_S
+        for d in self.config.uploads_dir.iterdir():
+            try:
+                if d.is_dir() and d.stat().st_mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+            except OSError:
+                continue
+
+    def _udir(self, uid: str) -> Path:
+        if not re.fullmatch(r"[0-9a-f]{12,32}", uid or ""):
+            raise KeyError(uid)
+        d = self.config.uploads_dir / uid
+        if not (d / "meta.json").exists():
+            raise KeyError(uid)
+        return d
+
+    def _upload_meta(self, uid: str) -> Dict:
+        return json.loads((self._udir(uid) / "meta.json").read_text())
+
+    def _read_upload(self, uid: str) -> np.ndarray:
+        d = self._udir(uid)
+        meta = json.loads((d / "meta.json").read_text())
+        return np.asarray(imageio.imread(str(d / meta["image_file"])))
+
+    def stage_upload(self, image_name: str, image_bytes: bytes) -> Dict:
+        """Store a gel photo for the layout step; validate it is readable."""
+        self._prune_uploads()
+        uid = uuid.uuid4().hex[:16]
+        d = self.config.uploads_dir / uid
+        d.mkdir(parents=True)
+        ext = _SAFE.sub("_", Path(image_name or "image.png").suffix or ".png")
+        image_file = f"image{ext}"
+        (d / image_file).write_bytes(image_bytes)
+        try:
+            raw = np.asarray(imageio.imread(str(d / image_file)))
+        except Exception as e:
+            shutil.rmtree(d, ignore_errors=True)
+            raise ValueError(f"could not read image {image_name!r}: {e}")
+        h, w = raw.shape[:2]
+        meta = {"id": uid, "image_name": image_name, "image_file": image_file,
+                "image_media_type": self._image_media_type(image_name),
+                "image": {"width": int(w), "height": int(h)}, "created": _now()}
+        _atomic_write_json(d / "meta.json", meta, indent=1)
+        return self._upload_info(meta)
+
+    def _upload_info(self, meta: Dict) -> Dict:
+        w, h = meta["image"]["width"], meta["image"]["height"]
+        return {"upload_id": meta["id"], "image_name": meta["image_name"],
+                "image": meta["image"], "prestitched": is_prestitched((w, h)),
+                "presets": list(PRESETS),
+                "last_layouts": sorted(p for p in PRESETS
+                                       if (self.config.layouts_dir / f"last-{p}.json").exists())}
+
+    def upload_image(self, uid: str) -> Tuple[Path, str]:
+        d = self._udir(uid)
+        meta = json.loads((d / "meta.json").read_text())
+        return d / meta["image_file"], meta.get("image_media_type", "application/octet-stream")
+
+    def propose_layout(self, uid: str, preset: str, source: str = "detect") -> Dict:
+        """Starting layout for a staged photo: detected, last confirmed, or
+        an even split. Returns {layout, warnings, source}."""
+        if preset not in PRESETS:
+            raise ValueError(f"unknown preset {preset!r}; choose one of {', '.join(PRESETS)}")
+        if source not in LAYOUT_SOURCES:
+            raise ValueError(f"unknown layout source {source!r}")
+        raw = self._read_upload(uid)
+        size = (raw.shape[1], raw.shape[0])
+        warnings: List[str] = []
+        if source == "detect":
+            try:
+                det = detect_layout(raw, preset)
+                layout, warnings = det.layout, list(det.warnings)
+            except LayoutError as e:
+                layout, source = preset_layout(preset, size), "even"
+                warnings.append(f"automatic detection failed ({e}); showing an even split")
+        elif source == "last":
+            path = self.config.layouts_dir / f"last-{preset}.json"
+            if not path.exists():
+                raise ValueError(f"no confirmed {preset} layout yet")
+            layout = Layout.load_json(str(path)).scaled_to(size)
+        else:
+            layout = preset_layout(preset, size)
+        return {"layout": layout.to_dict(), "warnings": warnings, "source": source}
+
+    @staticmethod
+    def _parse_layout(layout: Dict, size: Tuple[int, int]) -> Layout:
+        try:
+            lay = Layout.from_dict(layout)
+        except LayoutError as e:
+            raise ValueError(f"layout: {e}")
+        if lay.is_stitched:
+            raise ValueError("layout: no gel pieces defined")
+        return lay.scaled_to(size) if tuple(lay.image_size) != size else lay
+
+    def preview_layout(self, uid: str, layout: Dict) -> bytes:
+        """PNG of the joined strip with mix numbers, for the layout editor."""
+        raw = self._read_upload(uid)
+        lay = self._parse_layout(layout, (raw.shape[1], raw.shape[0]))
+        try:
+            lay.validate()
+            stitched, manifest = stitch(raw, lay)
+        except LayoutError as e:
+            raise ValueError(f"layout: {e}")
+        img = render_stitched(stitched, manifest)
+        if img.shape[1] > PREVIEW_MAX_W:
+            from PIL import Image
+            pil = Image.fromarray(img)
+            pil.thumbnail((PREVIEW_MAX_W, PREVIEW_MAX_W))
+            img = np.asarray(pil)
+        buf = BytesIO()
+        imageio.imwrite(buf, img, format="png")
+        return buf.getvalue()
+
+    def relayout(self, sid: str) -> Dict:
+        """Stage a layout session's original photo again, with its layout,
+        so the cuts can be corrected (the result is a new session)."""
+        sdir = self._sdir(sid)
+        meta = json.loads((sdir / "meta.json").read_text())
+        if not meta.get("original_file"):
+            raise ValueError("this session was not made from a raw gel photo")
+        info = self.stage_upload(meta.get("original_name") or meta["image_name"],
+                                 (sdir / meta["original_file"]).read_bytes())
+        info["layout"] = json.loads((sdir / "layout.json").read_text())
+        info["tray_store_name"] = meta.get("tray_store_name")
+        return info
+
     # ---------- sessions ----------
 
     def _sdir(self, sid: str) -> Path:
@@ -181,13 +346,26 @@ class SessionStore:
             raise KeyError(sid)
         return d
 
-    def create_session(self, image_name: str, image_bytes: bytes,
+    def create_session(self, image_name: Optional[str] = None,
+                       image_bytes: Optional[bytes] = None,
                        tray_filename: Optional[str] = None,
                        tray_bytes: Optional[bytes] = None,
                        tray_name: Optional[str] = None,
                        min_area: Optional[int] = None,
                        invert: bool = False,
-                       percentile_norm: bool = False) -> Dict:
+                       percentile_norm: bool = False,
+                       upload_id: Optional[str] = None,
+                       layout: Optional[Dict] = None) -> Dict:
+        """Run the pipeline on an image (bytes, or a staged ``upload_id``).
+        With ``layout``, the photo is first cut and joined, and lanes come
+        from the layout's known geometry."""
+        if upload_id:
+            udir = self._udir(upload_id)
+            umeta = json.loads((udir / "meta.json").read_text())
+            image_name = umeta["image_name"]
+            image_bytes = (udir / umeta["image_file"]).read_bytes()
+        if image_bytes is None:
+            raise ValueError("provide an image or an upload_id")
         # tray first: fail fast on a bad sheet before burning inference time
         if tray_bytes is not None:
             # save_tray returns the (possibly deduped) store name
@@ -212,6 +390,23 @@ class SessionStore:
                 raw = np.asarray(imageio.imread(str(sdir / image_file)))
             except Exception as e:  # unreadable/unsupported image
                 raise ValueError(f"could not read image {image_name!r}: {e}")
+            layout_obj: Optional[Layout] = None
+            original = None
+            if layout is not None:
+                layout_obj = self._parse_layout(layout, (raw.shape[1], raw.shape[0]))
+                try:
+                    layout_obj.validate(expected_lanes=len(tray.lanes))
+                    stitched, manifest = stitch(raw, layout_obj)
+                except LayoutError as e:
+                    raise ValueError(f"layout: {e}")
+                original = {"file": f"original{ext}",
+                            "image": {"width": int(raw.shape[1]), "height": int(raw.shape[0])}}
+                (sdir / image_file).rename(sdir / original["file"])
+                image_file = "image.png"
+                raw = stitched
+                imageio.imwrite(str(sdir / image_file), raw)
+                layout_obj.save_json(str(sdir / "layout.json"))
+                manifest.save_json(str(sdir / "lanes.json"))
             h, w = raw.shape[:2]
 
             params = {
@@ -241,17 +436,29 @@ class SessionStore:
         meta = {
             "id": sid, "image_name": image_name, "image_file": image_file,
             # allowlist: never serve attacker-chosen types like text/html
-            "image_media_type": self._image_media_type(image_name),
+            "image_media_type": ("image/png" if original
+                                 else self._image_media_type(image_name)),
             "tray_name": tray.name, "tray_store_name": store_name,
             "created": _now(), "image": {"width": int(w), "height": int(h)},
             "params": params,
             "defaults": {"match_tol": self.config.default_match_tol,
                          "lane_gap": self.config.default_lane_gap},
         }
+        if original:
+            meta.update({"original_file": original["file"], "original_name": image_name,
+                         "original_media_type": self._image_media_type(image_name),
+                         "original_image": original["image"],
+                         "layout_preset": layout_obj.preset})
+            if layout_obj.preset in PRESETS:  # remember for "use last confirmed"
+                layout_obj.save_json(str(self.config.layouts_dir /
+                                         f"last-{layout_obj.preset}.json"))
         _atomic_write_json(sdir / "meta.json", meta, indent=1)
         self._write_edits(sdir, {"lane_overrides": [], "deleted_bands": [],
                                  "added_bands": []})
-        return self._recompute(sid)
+        state = self._recompute(sid)
+        if upload_id:
+            shutil.rmtree(self.config.uploads_dir / upload_id, ignore_errors=True)
+        return state
 
     @staticmethod
     def _image_media_type(name: str) -> str:
@@ -292,6 +499,13 @@ class SessionStore:
         if path.parent != sdir.resolve() or not path.exists():
             raise KeyError(f"{sid}/{name}")
         return path
+
+    def original_file(self, sid: str) -> Tuple[Path, str]:
+        meta = json.loads((self._sdir(sid) / "meta.json").read_text())
+        if not meta.get("original_file"):
+            raise KeyError(f"{sid}/original")
+        return (self.session_file(sid, meta["original_file"]),
+                meta.get("original_media_type", "application/octet-stream"))
 
     def image_file(self, sid: str) -> Tuple[Path, str]:
         meta = json.loads((self._sdir(sid) / "meta.json").read_text())
@@ -397,8 +611,11 @@ class SessionStore:
         params = meta["params"]
 
         bands = self._apply_band_edits(raw_bands, edits)
+        lane_map = None
+        if (sdir / "lanes.json").exists():
+            lane_map = Manifest.load_json(str(sdir / "lanes.json")).to_lane_map()
         ga = analyse_gel(bands, tray, lane_gap=params.get("lane_gap", 20.0),
-                         match_tol=params.get("match_tol", 0.25))
+                         match_tol=params.get("match_tol", 0.25), lane_map=lane_map)
         self._apply_lane_overrides(ga, edits.get("lane_overrides"))
         result = type_sample(ga, tray)
 
@@ -407,6 +624,7 @@ class SessionStore:
             "image": meta["image_name"], "tray": tray.name,
             "analysis": {
                 "slope_b": round(ga.slope_b, 2),
+                "lane_assignment": "layout" if lane_map else "band-gaps",
                 "panels": [list(p) for p in ga.panels],
                 "warnings": ga.warnings,
                 "invalid_lanes": [l.mix for l in ga.lanes if not l.valid],
@@ -432,6 +650,9 @@ class SessionStore:
             "analysis": ga.to_dict(),
             "typing": result.to_dict(),
             "edits": edits,
+            "lane_assignment": "layout" if lane_map else "band-gaps",
+            "has_original": bool(meta.get("original_file")),
+            "layout_preset": meta.get("layout_preset"),
         }
         _atomic_write_json(sdir / "state.json", state)
         return state

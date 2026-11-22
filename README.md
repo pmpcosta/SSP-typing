@@ -28,7 +28,8 @@ Standalone pipeline — no QuPath, no PyTorch at runtime:
     control-band fitting (smile correction), bp calibration, band classification
   - `typing_engine.py` — allele-pair scoring with full ambiguity reporting,
     invalid-lane QC
-  - `webapp/` — local FastAPI server + canvas UI (interactive editing, audit log)
+  - `webapp/` — local FastAPI server + canvas UI (layout step, interactive
+    editing, audit log)
   - `models.py` — HuggingFace model-zoo registry, cache, downloads
   - `cli.py` — `ssp-typing` entry point
 - `python-gelgenie/gelgenie/` — upstream GelGenie training pipeline (kept for
@@ -72,7 +73,14 @@ CLI (batch):
 Web app (interactive):
 
     ssp-typing serve                      # opens http://127.0.0.1:8765
-    # upload gel + tray; click bands to delete/restore, shift+click to add,
+    # upload gel + tray. A raw gel photo (3x32 / 6x16) opens the layout step:
+    # the detected outlines, row cuts and mix numbers are drawn on the photo;
+    # drag corners / row bars / used-lane bounds to correct them (Detect,
+    # Use last confirmed, Even split), check the joined-strip preview, then
+    # "Confirm layout & type". The raw photo + layout are kept with the
+    # session; "Re-cut layout" corrects them (as a new session). A joined
+    # strip skips the layout step.
+    # In the session: click bands to delete/restore, shift+click to add,
     # click lane headers to force +/−; every edit re-types instantly and is
     # recorded in an append-only audit log (edits_history.jsonl per session)
 
@@ -105,7 +113,7 @@ Model resolution order: `--model` → `$SSP_MODEL` → cached default
   distortion) and lane numbering at every piece edge was checked by eye;
   fully automatic detect → join → type on G_26160 gives the same calls as
   the hand-joined image
-- Test suite: `cd python-gelgenie && pytest` (219 tests; real-gel tests
+- Test suite: `cd python-gelgenie && pytest` (233 tests; real-gel tests
   skip unless fixtures are present). Validation fixtures (gel image, vendor
   tray sheet, expected bands) are NOT in this repo — put them in `testdata/`
   at the repo root (gitignored) or point `$SSP_TESTDATA_DIR` at a private

@@ -17,7 +17,7 @@
   <section>
     <h2>New session</h2>
     <form id="upload-form">
-      <label>Gel image
+      <label>Gel image (raw photo or joined strip)
         <input type="file" id="image-file" accept="image/*" required>
       </label>
       <label>Tray sheet (.xlsx/.json)
@@ -30,7 +30,7 @@
         <label><input type="checkbox" id="invert-flag"> invert</label>
         <label>min area <input type="number" id="min-area" value="5" min="1" style="width:4em"></label>
       </div>
-      <button type="submit" id="run-btn">Run pipeline</button>
+      <button type="submit" id="run-btn">Continue</button>
       <div id="upload-status" class="status"></div>
     </form>
     <div class="row">
@@ -47,8 +47,48 @@
 
 <main id="main">
   <div id="placeholder">
-    Upload a gel image and a tray sheet, then <b>Run pipeline</b>.<br>
+    Upload a gel image and a tray sheet, then <b>Continue</b>.<br>
+    A raw gel photo (3×32 or 6×16 lane blocks) first goes through a layout
+    step where you confirm how it is cut and joined.<br>
     Results are advisory / research use only.
+  </div>
+
+  <div id="layout-step" hidden>
+    <h2 id="lay-title">Layout</h2>
+    <div id="layout-toolbar">
+      <label>Gel format
+        <select id="lay-preset">
+          <option value="3x32">3×32 (one gel)</option>
+          <option value="6x16">6×16 (two pieces)</option>
+        </select>
+      </label>
+      <button id="lay-detect" type="button" title="detect outlines, lanes and row cuts">Detect</button>
+      <button id="lay-last" type="button" title="the layout you last confirmed for this format">Use last confirmed</button>
+      <button id="lay-even" type="button" title="start from an even split of the photo">Even split</button>
+      <button id="lay-zoom-out" type="button" title="zoom out">−</button>
+      <button id="lay-zoom-in" type="button" title="zoom in">+</button>
+      <button id="lay-zoom-fit" type="button" title="fit width">fit</button>
+      <span id="lay-count"></span>
+      <span id="lay-status" class="status"></span>
+      <span class="spacer"></span>
+      <button id="lay-cancel" type="button">Cancel</button>
+      <button id="lay-confirm" type="button" class="primary">Confirm layout &amp; type</button>
+    </div>
+    <div id="lay-warnings"></div>
+    <div id="layout-container"><canvas id="layout-canvas"></canvas></div>
+    <div id="lay-hint">
+      drag <b>red corners</b> to fit each gel piece &nbsp;·&nbsp;
+      drag <b>white bars</b> onto the top of each row of wells &nbsp;·&nbsp;
+      drag <b>◂ ▸</b> to exclude empty wells (shift: this row only) &nbsp;·&nbsp;
+      check the mix numbers, especially at the edges of each piece
+    </div>
+    <details id="lay-rows">
+      <summary>Rows and lane counts</summary>
+      <table><thead><tr><th>piece</th><th>row</th><th>mixes</th><th>lanes</th></tr></thead>
+        <tbody id="lay-rows-body"></tbody></table>
+    </details>
+    <h2>Joined strip preview <span id="lay-preview-status" class="status"></span></h2>
+    <div id="lay-preview-wrap"><img id="lay-preview" alt="joined strip preview"></div>
   </div>
 
   <div id="workspace" hidden>
@@ -62,6 +102,9 @@
         <span id="match-tol-val"></span>
       </label>
       <button id="reset-edits" type="button">Reset edits</button>
+      <button id="relayout-btn" type="button" hidden
+              title="correct how the raw photo was cut (creates a new session)">Re-cut layout</button>
+      <span id="lane-source" class="muted"></span>
       <span class="spacer"></span>
       <a id="dl-typing" class="dl" download>typing.json</a>
       <a id="dl-report" class="dl" download>report.txt</a>
@@ -92,6 +135,7 @@
   </div>
 </main>
 
+<script src="layout.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
