@@ -334,6 +334,10 @@ class SessionStore:
                                  (sdir / meta["original_file"]).read_bytes())
         info["layout"] = json.loads((sdir / "layout.json").read_text())
         info["tray_store_name"] = meta.get("tray_store_name")
+        # segmentation settings, so the corrected session is segmented alike
+        params = meta.get("params", {})
+        info["params"] = {k: params[k] for k in ("min_area", "invert", "percentile_norm")
+                          if k in params}
         return info
 
     # ---------- sessions ----------

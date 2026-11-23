@@ -90,12 +90,13 @@ def find_seam(g: np.ndarray) -> Optional[int]:
     """x of the strongest full-height vertical edge in the middle third."""
     H, W = g.shape
     col = gaussian_filter1d(g.mean(axis=0), 2)
-    step = np.abs(col[6:] - col[:-6])
+    step = np.abs(col[6:] - col[:-6])  # step[i] is centred on x = i + 3
     lo, hi = W // 3, 2 * W // 3
-    if hi <= lo + 1:
+    mids = np.arange(len(step)) + 3
+    cand = np.flatnonzero((mids >= lo) & (mids < hi))
+    if len(cand) == 0:
         return None
-    x = lo + int(np.argmax(step[lo:hi]))
-    return x + 3
+    return int(mids[cand[np.argmax(step[cand])]])
 
 
 def _fit_grid(profile: np.ndarray, n: int, p_range: Tuple[float, float]) -> Tuple[float, float, float]:
@@ -129,6 +130,7 @@ def _dark_features(gb: np.ndarray, pitch: float) -> np.ndarray:
     return grey_closing(gb, size=(size, 1)) - gb
 
 
+ROW_ANCHOR = 0.75  # max end-lane move of a row's grid from the piece grid (lanes)
 OCCUPIED_RATIO = 2.0  # lane strip vs neighbouring gaps (99th percentiles)
 
 
@@ -179,8 +181,9 @@ def _lsq_grid(profile: np.ndarray, off: float, pitch: float, n: int) -> Tuple[fl
     located as the centroid of its part above half height (bands are
     flat-topped, so the arg-max alone is biased); bands touching the window
     edge (likely a neighbour's) and weak lanes are skipped, outliers dropped. Iterates while
-    the grid moves. The result may not move any lane by more than half a
-    lane from the coarse fit, so it can never renumber lanes."""
+    the grid moves. If the result moves an end lane by more than half a
+    lane from the grid it was given, that grid is returned instead (callers
+    anchor to their own settled grid as well)."""
     o, p = off, pitch
     for _ in range(10):
         ks, xs, hs = [], [], []
@@ -342,8 +345,15 @@ def _detect_block(g: np.ndarray, x0: int, x1: int, n_rows: int, n_lanes: int,
         if occ[k] < OCCUPIED_RATIO:
             warnings.append(f"{tag}: the {label} lane shows little band signal; "
                             "confirm the lane numbering at that edge")
-    # per-row refinement of offset and pitch (shear / perspective): the
-    # search stays within a third of a lane, so it cannot jump a lane
+    # per-row refinement of offset and pitch (shear / perspective). The row
+    # search alone could stretch the far lane by over a lane, so every row is
+    # anchored to the settled grid (least-squares refined: the comb fit is
+    # stretched on flat-topped bands): neither end lane may move ROW_ANCHOR
+    # lanes or more from it, else the row keeps that grid. The limit is not
+    # half a lane because real shear goes beyond it (G_26160: 0.55 lane
+    # between rows); a one-lane jump shows as about 1.
+    anc_off, anc_pitch = _lsq_grid(total, off, pitch, n_lanes)
+    anc_end = anc_off + (n_lanes - 1) * anc_pitch
     row_off, row_pitch = [], []
     ks = np.arange(n_lanes)
     for prof in profs:
@@ -360,6 +370,9 @@ def _detect_block(g: np.ndarray, x0: int, x1: int, n_rows: int, n_lanes: int,
             if sc[i] > best[2]:
                 best = (float(cands[i]), float(p), float(sc[i]))
         o, p = _lsq_grid(c, best[0], best[1], n_lanes)
+        if (abs(o - anc_off) >= ROW_ANCHOR * pitch
+                or abs(o + (n_lanes - 1) * p - anc_end) >= ROW_ANCHOR * pitch):
+            o, p = anc_off, anc_pitch
         row_off.append(o)
         row_pitch.append(p)
 
@@ -425,6 +438,16 @@ def _detect_block(g: np.ndarray, x0: int, x1: int, n_rows: int, n_lanes: int,
         (float(np.polyval(fr, bot_r)), bot_r),
         (float(np.polyval(fl, bot_l)), bot_l),
     ]
+    # each band row must start below its own cut: cuts that merely increase
+    # can still put two rows' bands in one strip. (The bottom edge is not
+    # checked against the last peak: on real gels the strongest band row of
+    # the last row can be the dye front below the gel, e.g. G_26160.)
+    cuts = [(yt_l + yt_r) / 2] + [(tl + tr) / 2 for tl, tr in zip(tops_l[1:], tops_r[1:])]
+    for ri, c in enumerate(top):
+        nxt = cuts[ri + 1] if ri + 1 < n_rows else np.inf
+        if not cuts[ri] < c < nxt:
+            raise LayoutError(f"{tag} row {ri + 1}: its band row (y={c:.0f}) falls outside "
+                              f"the row cut (y={cuts[ri]:.0f} to {nxt:.0f})")
     # row cuts as fractions of the rectified block height (mean of both sides)
     hl, hr = bot_l - yt_l, bot_r - yt_r
     fracs = [0.0] + [float(np.clip(((tl - yt_l) / hl + (tr - yt_r) / hr) / 2, 0, 1))

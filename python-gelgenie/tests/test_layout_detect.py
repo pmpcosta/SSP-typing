@@ -34,7 +34,7 @@ from skimage.transform import AffineTransform, warp
 
 from ssp.cli import cli
 from ssp.layout import Layout, LayoutError, stitch
-from ssp.layout_detect import detect_layout
+from ssp.layout_detect import detect_layout, find_seam
 
 PITCH = 30
 ROW_H = 260
@@ -86,9 +86,10 @@ def _truth(tf, empty, lanes, n_rows):
     return out
 
 
-def _lane_x_and_top(block, row, y_img):
+def _lane_x_and_top(block, row, y_img, with_t=False):
     """Detected lane centres (image x) at image height y_img, and the row-top y
-    under each lane centre."""
+    under each lane centre (plus, with ``with_t``, y_img as a fraction of the
+    row's height under each lane: 0 at its top cut, 1 at its bottom cut)."""
     w, h = block.size()
     tf = block.transform()
     step = (row.right - row.left) * w / row.lanes
@@ -96,12 +97,15 @@ def _lane_x_and_top(block, row, y_img):
     top = tf(np.c_[xs, np.full(row.lanes, row.top * h)])
     bot = tf(np.c_[xs, np.full(row.lanes, row.bottom * h)])
     t = (y_img - top[:, 1]) / (bot[:, 1] - top[:, 1])
-    return top[:, 0] + (bot[:, 0] - top[:, 0]) * t, top[:, 1]
+    x = top[:, 0] + (bot[:, 0] - top[:, 0]) * t
+    return (x, top[:, 1], t) if with_t else (x, top[:, 1])
 
 
 def _assert_matches(block, truth):
     for row, (ctrl, well) in zip(block.rows, truth):
-        x_at_ctrl, row_top = _lane_x_and_top(block, row, ctrl[:, 1])
+        x_at_ctrl, row_top, t = _lane_x_and_top(block, row, ctrl[:, 1], with_t=True)
+        # the control band must be inside this row's crop
+        assert np.all((t >= 0) & (t < 1))
         assert np.abs(x_at_ctrl - ctrl[:, 0]).max() < 0.2 * PITCH
         # cut sits just above the wells: never below them, at most ~1 lane above
         assert np.all(row_top < well[:, 1])
@@ -171,6 +175,39 @@ def test_lane_shift_kept_when_ambiguous():
     band = _lane_band_image(n=18)  # bands beyond both ends: nothing to decide
     shift, _ = _settle_lane_shift(band, 130, 30.0, 16, (100, 300), 200.0)
     assert shift == 0
+
+
+def test_cut_below_next_rows_bands_is_rejected(monkeypatch):
+    """Increasing cuts are not enough: a cut pushed below the next row's
+    control line would put two rows' bands in one strip."""
+    import ssp.layout_detect as ld
+    choose = ld._choose_wells
+
+    def shifted(prof, windows, pitch):
+        wells, inferred = choose(prof, windows, pitch)
+        wells[1] += ROW_H  # second cut moves a whole row down
+        return wells, list(range(len(wells)))  # use as-is (no walk-up)
+
+    monkeypatch.setattr(ld, "_choose_wells", shifted)
+    up = _piece(3, 32, positives={5, 40, 77})
+    img = _render([(up, AffineTransform(translation=(70, 50)))], (900, 1150), False)
+    with pytest.raises(LayoutError, match="row 2: its band row"):
+        detect_layout(img, "3x32")
+
+
+@pytest.mark.parametrize("width", range(1, 13))
+def test_seam_search_on_tiny_images(width):
+    """Never raises; a seam, if any, is centred in the middle third."""
+    x = find_seam(np.random.default_rng(0).random((20, width)))
+    if width <= 6:
+        assert x is None
+    else:
+        assert x is None or width // 3 <= x < 2 * width // 3
+
+
+def test_tiny_6x16_image_raises_layout_error():
+    with pytest.raises(LayoutError):
+        detect_layout(np.zeros((40, 8), dtype=np.uint8), "6x16")
 
 
 def test_blank_image_raises_layout_error():
@@ -291,6 +328,7 @@ def test_g26160_detected_layout_types_like_hand_stitched(tmp_path):
     r = CliRunner().invoke(cli, ['preprocess', str(PRE / 'G_26160_before.jpg'),
                                  '--preset', '3x32', '-o', str(pre)])
     assert r.exit_code == 0, r.output
+    assert "detected automatically" in r.output, r.output  # not the even-split fallback
     results = {}
     runs = (('auto', PRE / 'G_26160_before.jpg', ['--layout', str(pre / 'layout.json')]),
             ('ref', TESTDATA / 'G_26160.jpg', []))

@@ -19,6 +19,8 @@ const LayoutEditor = (() => {
     uid: null, info: null, layout: null, img: null, scale: null,
     drag: null, previewTimer: null, previewUrl: null, previewSeq: 0,
     onConfirm: null, onCancel: null,
+    gen: 0,   // editor instance: bumped by open() / close(); async work that
+              // started under another instance must not touch this one
   };
   const $ = (id) => document.getElementById(id);
 
@@ -89,19 +91,21 @@ const LayoutEditor = (() => {
   async function propose(source) {
     const preset = $('lay-preset').value;
     try { localStorage.setItem('ssp.preset', preset); } catch (e) { /* private mode */ }
+    const gen = ed.gen;
     setBusy(true, source === 'detect' ? 'detecting layout…' : 'loading layout…');
     try {
       const d = await ed.api(`/api/uploads/${ed.uid}/layout`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ preset, source }),
       });
+      if (gen !== ed.gen) return;                 // editor closed or reopened
       ed.layout = d.layout;
       showWarnings(d.warnings, d.source === 'even'
         ? 'Even split of the whole photo: fit every outline and cut by hand.' : '');
       afterChange();
     } catch (e) {
-      showWarnings([e.message]);
-    } finally { setBusy(false); }
+      if (gen === ed.gen) showWarnings([e.message]);
+    } finally { if (gen === ed.gen) setBusy(false); }
   }
 
   function schedulePreview() {
@@ -111,26 +115,30 @@ const LayoutEditor = (() => {
 
   async function refreshPreview() {
     if (!ed.uid) return;
+    const gen = ed.gen;
     const seq = ++ed.previewSeq;
+    const stale = () => gen !== ed.gen || seq !== ed.previewSeq;
     $('lay-preview-status').textContent = 'updating…';
     try {
       const res = await fetch(`/api/uploads/${ed.uid}/preview`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ layout: ed.layout }),
       });
-      if (seq !== ed.previewSeq) return;          // a newer request is underway
+      if (stale()) return;            // a newer request, or another editor
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        $('lay-preview-status').textContent = body.detail || res.statusText;
+        if (!stale()) $('lay-preview-status').textContent = body.detail || res.statusText;
         return;
       }
-      const url = URL.createObjectURL(await res.blob());
+      const blob = await res.blob();
+      if (stale()) return;
+      const url = URL.createObjectURL(blob);
       if (ed.previewUrl) URL.revokeObjectURL(ed.previewUrl);
       ed.previewUrl = url;
       $('lay-preview').src = url;
       $('lay-preview-status').textContent = '';
     } catch (e) {
-      $('lay-preview-status').textContent = e.message;
+      if (!stale()) $('lay-preview-status').textContent = e.message;
     }
   }
 
@@ -374,6 +382,7 @@ const LayoutEditor = (() => {
   /* ---------- public ---------- */
 
   async function open(info, { layout = null, warnings = [], api, onConfirm, onCancel } = {}) {
+    const gen = ++ed.gen;
     ed.uid = info.upload_id; ed.info = info; ed.api = api;
     ed.onConfirm = onConfirm; ed.onCancel = onCancel;
     ed.scale = null; ed.layout = null;
@@ -390,6 +399,7 @@ const LayoutEditor = (() => {
     ed.img = new Image();
     ed.img.src = `/api/uploads/${ed.uid}/image`;
     await ed.img.decode();
+    if (gen !== ed.gen) return;               // closed or reopened meanwhile
     let preset = layout && layout.preset;
     if (!preset) { try { preset = localStorage.getItem('ssp.preset'); } catch (e) { /* */ } }
     $('lay-preset').value = (info.presets || []).includes(preset) ? preset : '3x32';
@@ -404,6 +414,7 @@ const LayoutEditor = (() => {
   }
 
   function close() {
+    ed.gen++;                                 // pending work belongs to no one now
     $('layout-step').hidden = true;
     clearTimeout(ed.previewTimer);
     if (ed.previewUrl) URL.revokeObjectURL(ed.previewUrl);
@@ -426,13 +437,14 @@ const LayoutEditor = (() => {
       // the session consumes the staged photo: no preview may follow
       clearTimeout(ed.previewTimer);
       ed.previewSeq++;
+      const gen = ed.gen;
       setBusy(true, 'segmenting + typing… (a few seconds)');
       try {
         await ed.onConfirm(ed.uid, JSON.parse(JSON.stringify(ed.layout)));
-        close();
+        if (gen === ed.gen) close();
       } catch (e) {
-        showWarnings([e.message]);
-      } finally { setBusy(false); }
+        if (gen === ed.gen) showWarnings([e.message]);
+      } finally { if (gen === ed.gen) setBusy(false); }
     });
     const c = $('layout-canvas');
     c.addEventListener('pointerdown', onDown);

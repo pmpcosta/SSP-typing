@@ -47,6 +47,7 @@ boundaries from band gaps.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -97,7 +98,8 @@ class Block:
     rows: List[Row] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
-        return {"quad": [[round(x, 2), round(y, 2)] for x, y in self.quad],
+        # full precision: rounding can change the rectified size by a pixel
+        return {"quad": [[float(x), float(y)] for x, y in self.quad],
                 "rows": [r.to_dict() for r in self.rows]}
 
     @classmethod
@@ -162,10 +164,19 @@ class Layout:
             size = (int(d["image_size"][0]), int(d["image_size"][1]))
         except (KeyError, TypeError, ValueError, IndexError):
             raise LayoutError("layout needs image_size: [width, height]") from None
+        if size[0] <= 0 or size[1] <= 0:
+            raise LayoutError(f"layout image_size must be positive, got {list(size)}")
+        blocks = d.get("blocks", [])
+        if not isinstance(blocks, list):
+            raise LayoutError("layout blocks must be a list")
         gap = d.get("gap")
-        return cls(blocks=[Block.from_dict(b) for b in d.get("blocks", [])],
-                   image_size=size, preset=d.get("preset"),
-                   gap=None if gap is None else float(gap))
+        if gap is not None:
+            try:
+                gap = float(gap)
+            except (TypeError, ValueError):
+                raise LayoutError(f"layout gap must be a number or null, got {gap!r}") from None
+        return cls(blocks=[Block.from_dict(b) for b in blocks],
+                   image_size=size, preset=d.get("preset"), gap=gap)
 
     def save_json(self, path: str) -> None:
         with open(path, "w") as f:
@@ -181,6 +192,9 @@ class Layout:
 
     def scaled_to(self, image_size: Tuple[int, int]) -> "Layout":
         """Rescale block outlines to another image size (for layout reuse)."""
+        if min(self.image_size) <= 0 or min(image_size) <= 0:
+            raise LayoutError(f"cannot rescale a layout for {list(self.image_size)} "
+                              f"to {list(image_size)}: sizes must be positive")
         sx = image_size[0] / self.image_size[0]
         sy = image_size[1] / self.image_size[1]
         if sx == 1 and sy == 1:
@@ -197,6 +211,8 @@ class Layout:
         warnings: List[str] = []
         if self.is_stitched:
             return warnings
+        if self.gap is not None and not math.isfinite(self.gap):
+            raise LayoutError(f"gap must be a finite number of pixels, got {self.gap!r}")
         W, H = self.image_size
         for bi, b in enumerate(self.blocks):
             tag = f"block {bi + 1}"
@@ -357,7 +373,7 @@ class Manifest:
 
         if self.stitched_input or not self.lanes:
             return None
-        return LaneMap(slots=[(l.x0, l.x1) for l in self.lanes],
+        return LaneMap(slots=[(ln.x0, ln.x1) for ln in self.lanes],
                        panels=[(s.first_mix - 1, s.last_mix - 1) for s in self.strips])
 
     @classmethod
@@ -369,14 +385,25 @@ class Manifest:
                             x1=int(s["x1"]), height=int(s["height"]),
                             first_mix=int(s["first_mix"]), last_mix=int(s["last_mix"]))
                       for s in d.get("strips", [])]
-            lanes = [LaneSlot(mix=int(l["mix"]), block=int(l["block"]), row=int(l["row"]),
-                              x0=float(l["x0"]), x1=float(l["x1"]))
-                     for l in d.get("lanes", [])]
+            lanes = [LaneSlot(mix=int(ln["mix"]), block=int(ln["block"]), row=int(ln["row"]),
+                              x0=float(ln["x0"]), x1=float(ln["x1"]))
+                     for ln in d.get("lanes", [])]
             size = (int(d["image_size"][0]), int(d["image_size"][1]))
         except (KeyError, TypeError, ValueError, IndexError, AttributeError) as e:
             raise LayoutError(f"invalid lanes.json: {e}") from None
-        if [l.mix for l in lanes] != list(range(1, len(lanes) + 1)):
+        if [ln.mix for ln in lanes] != list(range(1, len(lanes) + 1)):
             raise LayoutError("invalid lanes.json: mixes must run 1..N in order")
+        # strips are the analysis panels: together they must cover 1..N
+        nxt = 1
+        for s in strips:
+            if s.first_mix != nxt or s.last_mix < s.first_mix:
+                raise LayoutError(
+                    f"invalid lanes.json: strip mixes {s.first_mix}-{s.last_mix} do not "
+                    f"continue from mix {nxt} (strips must cover 1..N in order)")
+            nxt = s.last_mix + 1
+        if lanes and nxt != len(lanes) + 1:
+            raise LayoutError(f"invalid lanes.json: strips cover mixes 1-{nxt - 1}, "
+                              f"lanes run 1-{len(lanes)}")
         return cls(image_size=size, strips=strips, lanes=lanes,
                    stitched_input=bool(d.get("stitched_input", False)))
 
@@ -445,6 +472,9 @@ def stitch(image: np.ndarray, layout: Layout,
         size = (rect.shape[1], rect.shape[0])
         for ri, row in enumerate(block.rows):
             x0, x1, y0, y1 = _row_box(row, size)
+            if x0 >= size[0] or y0 >= size[1]:
+                raise LayoutError(f"block {bi + 1} row {ri + 1}: the row is empty at "
+                                  f"{size[0]}x{size[1]} px")
             crops.append((bi, ri, rect[y0:y1, x0:x1]))
             pitches.append((x1 - x0) / row.lanes)
 

@@ -69,10 +69,11 @@ def _typing_upload(client):
     return _stage(client, gel), layout
 
 
-def _create(client, upload_id, layout, tray=None):
+def _create(client, upload_id, layout, tray=None, **params):
     return client.post("/api/sessions", data={
         "upload_id": upload_id, "layout": json.dumps(layout.to_dict()
                                                      if hasattr(layout, "to_dict") else layout),
+        **params,
     }, files={"tray": ("tray.json", tray or _tray96(), "application/json")})
 
 
@@ -209,12 +210,15 @@ def test_layout_requires_staged_upload(client):
 
 def test_relayout_restages_original_with_its_layout(client):
     info, layout = _typing_upload(client)
-    s = _create(client, info["upload_id"], layout).json()
+    s = _create(client, info["upload_id"], layout, min_area="7",
+                percentile_norm="true").json()
     r = client.post(f"/api/sessions/{s['id']}/relayout")
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["layout"]["blocks"] == layout.to_dict()["blocks"]
     assert d["tray_store_name"] == "tray"
+    # the re-cut session must be segmented like its source
+    assert d["params"] == {"min_area": 7, "invert": False, "percentile_norm": True}
     img = imageio.imread(BytesIO(client.get(f"/api/uploads/{d['upload_id']}/image").content))
     gel, _ = _typing_gel()
     np.testing.assert_array_equal(img, gel)

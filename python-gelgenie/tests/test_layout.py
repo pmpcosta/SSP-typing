@@ -315,12 +315,43 @@ def test_json_roundtrip(tmp_path):
     ('{"image_size": [10, 10], "blocks": [{"quad": [[0,0],[1,0],[1,1],[0,1]], '
      '"rows": [{"top": 0}]}]}', "invalid row"),
     ("{not json", "not valid JSON"),
+    ('{"image_size": [10, 10], "blocks": null}', "blocks must be a list"),
+    ('{"image_size": [10, 10], "gap": "auto", "blocks": []}', "gap must be a number"),
+    ('{"image_size": [0, 780], "blocks": []}', "image_size must be positive"),
 ])
 def test_bad_json_rejected(tmp_path, payload, msg):
     p = tmp_path / "bad.json"
     p.write_text(payload)
     with pytest.raises(LayoutError, match=msg):
         Layout.load_json(str(p))
+
+
+def test_json_keeps_full_corner_precision(tmp_path):
+    # rounding 1000.501 to 1000.5 would rectify to 1000 px instead of 1001
+    layout = Layout(blocks=[Block(quad=[(0, 0), (1000.501, 0), (1000.501, 50), (0, 50)],
+                                  rows=[Row(top=0, bottom=1, lanes=4)])],
+                    image_size=(1100, 60))
+    p = tmp_path / "layout.json"
+    layout.save_json(str(p))
+    back = Layout.load_json(str(p))
+    assert back.blocks[0].size() == layout.blocks[0].size() == (1001, 50)
+
+
+def test_nonfinite_gap_rejected():
+    _, layout = _gel_6x16()
+    layout.gap = float("nan")
+    with pytest.raises(LayoutError, match="finite"):
+        layout.validate()
+
+
+def test_empty_row_crop_rejected():
+    img = np.zeros((50, 1000), dtype=np.uint8)
+    layout = Layout(blocks=[Block(quad=[(0, 0), (1000, 0), (1000, 50), (0, 50)],
+                                  rows=[Row(top=0, bottom=1, lanes=4),
+                                        Row(top=0, bottom=1, left=0.9999, right=1, lanes=4)])],
+                    image_size=(1000, 50))
+    with pytest.raises(LayoutError, match="row 2: the row is empty"):
+        stitch(img, layout)
 
 
 # ---------------------------------------------------------------- rendering
@@ -438,6 +469,19 @@ def test_manifest_of_joined_input_has_no_lane_map():
      "1..N"),
 ])
 def test_bad_manifest_rejected(payload, msg):
+    with pytest.raises(LayoutError, match=msg):
+        Manifest.from_dict(payload)
+
+
+@pytest.mark.parametrize("drop, msg", [
+    (slice(0, 5), "strips cover mixes 1-80"),       # last strip (mixes 81-96) missing
+    (slice(1, 6), "do not continue from mix 1"),     # first strip missing
+])
+def test_manifest_strips_must_cover_every_mix(drop, msg):
+    gel, layout = _gel_6x16()
+    _, man = stitch(gel, layout)
+    payload = man.to_dict()
+    payload["strips"] = payload["strips"][drop]
     with pytest.raises(LayoutError, match=msg):
         Manifest.from_dict(payload)
 

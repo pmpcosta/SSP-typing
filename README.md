@@ -48,7 +48,8 @@ original GelGenie repository retains them (https://github.com/mattaq31/GelGenie)
     cd python-gelgenie
     python3.12 -m venv .venv            # or: uv venv
     .venv/bin/pip install -e '.[ssp,webapp]'
-    .venv/bin/ssp-typing models download        # ~57 MB, one time
+    source .venv/bin/activate           # puts ssp-typing on PATH (once per shell)
+    ssp-typing models download          # ~57 MB, one time
 
 ## Use
 
