@@ -297,6 +297,19 @@ def test_well_marks_in_every_lane_do_not_outvote_the_control_row():
     assert kinds[0][0] == "hmw" and ("control", 300) in kinds
 
 
+def test_one_lane_cluster_below_zone_does_not_trigger_fallback():
+    # four bands from a single lane are the densest below-zone window, but
+    # the control row (three lanes) still qualifies and must be chosen
+    lm = LaneMap(slots=[(i * 50.0, (i + 1) * 50.0) for i in range(4)], panels=[(0, 3)],
+                 well_zone=100.0)
+    c = lm.centers
+    bands = [_band(x, 30, area=150) for x in c]
+    bands += [_band(x, 300) for x in c[:3]]
+    bands += [_band(c[3], y) for y in (150, 154, 158, 162)]
+    ga = analyse_gel(bands, _tray(4), lane_map=lm)
+    assert [l.control_y for l in ga.lanes] == [300, 300, 300, None]
+
+
 def test_well_zone_falls_back_when_controls_sit_inside_it():
     # a very short run: the only band row is inside the zone; it is still used
     lm = _two_panel_map()

@@ -254,16 +254,12 @@ class GelAnalysis:
         }
 
 
-def _densest_window_row(ys: np.ndarray, lanes: np.ndarray, width: float) -> Optional[float]:
-    """Median y of the densest window; ties prefer more distinct lanes."""
-    return _densest_window(ys, lanes, width)[0]
-
-
-def _densest_window(ys: np.ndarray, lanes: np.ndarray,
-                    width: float) -> Tuple[Optional[float], int]:
-    """(median y, distinct lanes) of the densest window."""
+def _densest_window_row(ys: np.ndarray, lanes: np.ndarray, width: float,
+                        min_lanes: float = 0) -> Optional[float]:
+    """Median y of the densest window; ties prefer more distinct lanes.
+    Only windows with bands from at least ``min_lanes`` lanes compete."""
     if len(ys) == 0:
-        return None, 0
+        return None
     order = np.argsort(ys)
     ys_s, lanes_s = ys[order], lanes[order]
     best = (0, 0, None)
@@ -271,9 +267,9 @@ def _densest_window(ys: np.ndarray, lanes: np.ndarray,
         j = np.searchsorted(ys_s, ys_s[i] + width, side="left")
         count = j - i
         distinct = len(set(lanes_s[i:j].tolist()))
-        if (count, distinct) > (best[0], best[1]):
+        if distinct >= min_lanes and (count, distinct) > (best[0], best[1]):
             best = (count, distinct, float(np.median(ys_s[i:j])))
-    return best[2], best[1]
+    return best[2]
 
 
 def _panel_ranges(centers: Sequence[float]) -> List[Tuple[int, int]]:
@@ -321,16 +317,20 @@ def _fit_controls(
 
     for bp, group in groups:
         # rough control row: densest y-window over the group's bands
-        def row_of(cands: Dict[int, List[Band]]) -> Tuple[Optional[float], int]:
+        def row_of(cands: Dict[int, List[Band]], min_lanes: float = 0) -> Optional[float]:
             ys = [b.centroid_y for i in group for b in cands[i]]
             ls = [i for i in group for _ in cands[i]]
-            return _densest_window(np.asarray(ys), np.asarray(ls), 50.0)
+            return _densest_window_row(np.asarray(ys), np.asarray(ls), 50.0, min_lanes)
 
-        cands = {i: [b for b in lane_bands[i] if b.centroid_y >= well_zone] for i in group}
-        row, n_lanes = row_of(cands)
-        if well_zone > 0 and n_lanes < max(2, len(group) / 2):
-            cands = {i: lane_bands[i] for i in group}
-            row, _ = row_of(cands)
+        cands = {i: lane_bands[i] for i in group}
+        row = row_of(cands)
+        if well_zone > 0:
+            # densest below-zone row among those spanning enough lanes (one
+            # lane's cluster of bands must not trigger the fallback)
+            below = {i: [b for b in lane_bands[i] if b.centroid_y >= well_zone] for i in group}
+            row_below = row_of(below, min_lanes=max(2, len(group) / 2))
+            if row_below is not None:
+                cands, row = below, row_below
         if row is None:
             for i in group:
                 picks[i] = None
