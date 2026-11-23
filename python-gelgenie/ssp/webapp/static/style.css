@@ -171,3 +171,26 @@ a.dl:hover { border-color: var(--accent); }
 #lane-table td.call { font-weight: 700; }
 #lane-table td.call .ov { color: var(--accent); font-weight: 400; }
 .spec { max-width: 34em; }
+
+/* ---------- layout step ---------- */
+#layout-step { padding: 0.6em 1em 2em; }
+#layout-step h2 { font-size: 0.95em; color: var(--muted); margin: 0.6em 0 0.4em; }
+#layout-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5em; }
+#layout-toolbar .spacer { flex: 1; }
+#layout-toolbar button.primary { background: var(--accent); color: #000; font-weight: 600; }
+#lay-count { padding: 0.1em 0.5em; border-radius: 3px; }
+#lay-count.ok { background: #1e5c38; }
+#lay-count.bad { background: var(--invalid); }
+#lay-warnings { color: var(--warn); margin: 0.4em 0; }
+#layout-container {
+  max-height: 72vh; overflow: auto; background: #000;
+  border: 1px solid #000; margin-top: 0.4em;
+}
+#layout-canvas { display: block; touch-action: none; }
+#lay-hint { color: var(--muted); font-size: 0.85em; margin: 0.4em 0; }
+#lay-rows table { border-collapse: collapse; margin: 0.4em 0; }
+#lay-rows td, #lay-rows th { padding: 0.15em 0.6em; text-align: left; }
+#lay-rows input { width: 4em; }
+#lay-preview-wrap { overflow-x: auto; background: #000; }
+#lay-preview { display: block; height: 180px; max-width: none; }
+.muted { color: var(--muted); }

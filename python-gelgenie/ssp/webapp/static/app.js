@@ -1,4 +1,7 @@
 /* SSP Typing local UI — vanilla JS, no build step.
+ * Flow: the image is staged first (POST /api/uploads); a joined strip goes
+ * straight to typing, a raw gel photo goes through the layout step
+ * (layout.js) and the session is created from the confirmed layout.
  * Interactions: click band = delete/restore, shift+click = add band,
  * click lane header = cycle force positive/negative/auto,
  * match-tol slider re-types live. All edits round-trip through
@@ -42,6 +45,7 @@ async function api(path, opts = {}) {
 async function init() {
   await Promise.all([loadTrays(), loadSessions()]);
   bindUI();
+  LayoutEditor.bind();
 }
 
 async function loadTrays() {
@@ -96,6 +100,7 @@ function bindUI() {
     draw();
   });
   $('reset-edits').addEventListener('click', resetEdits);
+  $('relayout-btn').addEventListener('click', relayout);
 
   const tol = $('match-tol');
   let tolTimer = null;
@@ -122,34 +127,76 @@ function escapeHtml(s) {
 
 /* ---------------- session lifecycle ---------------- */
 
+function trayChoice() {
+  const trayFile = $('tray-file').files[0];
+  const trayName = $('tray-select').value;
+  if (!trayFile && !trayName) throw new Error('Choose a tray file or a stored tray.');
+  return { trayFile, trayName };
+}
+
+// params: segmentation settings to use instead of the sidebar's (a re-cut
+// keeps the source session's, so correcting cuts never changes them)
+async function createSession(fields, params = null) {
+  const { trayFile, trayName } = trayChoice();
+  const fd = new FormData();
+  for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+  if (trayFile) fd.append('tray', trayFile);
+  else fd.append('tray_name', trayName);
+  if (params) {
+    if (params.min_area != null) fd.append('min_area', String(params.min_area));
+    if (params.invert) fd.append('invert', 'true');
+    if (params.percentile_norm) fd.append('percentile_norm', 'true');
+  } else {
+    fd.append('min_area', String($('min-area').value || 5));
+    if ($('invert-flag').checked) fd.append('invert', 'true');
+  }
+  const data = await api('/api/sessions', { method: 'POST', body: fd });
+  await setState(data, { refit: true, newSession: true });
+  await Promise.all([loadSessions(), loadTrays()]);
+  return data;
+}
+
+function openLayoutStep(info, { params = null, ...opts } = {}) {
+  return LayoutEditor.open(info, {
+    ...opts,
+    api,
+    onConfirm: (uid, layout) =>
+      createSession({ upload_id: uid, layout: JSON.stringify(layout) }, params),
+    onCancel: () => {
+      if (state.data) $('workspace').hidden = false;
+      else $('placeholder').hidden = false;
+    },
+  });
+}
+
 async function runPipeline(ev) {
   ev.preventDefault();
   const imgFile = $('image-file').files[0];
-  const trayFile = $('tray-file').files[0];
-  const trayName = $('tray-select').value;
   const status = $('upload-status');
   if (!imgFile) return;
-  if (!trayFile && !trayName) {
+  try {
+    trayChoice();
+  } catch (e) {
     status.className = 'status error';
-    status.textContent = 'Choose a tray file or a stored tray.';
+    status.textContent = e.message;
     return;
   }
-  const fd = new FormData();
-  fd.append('image', imgFile);
-  if (trayFile) fd.append('tray', trayFile);
-  else fd.append('tray_name', trayName);
-  fd.append('min_area', String($('min-area').value || 5));
-  if ($('invert-flag').checked) fd.append('invert', 'true');
-
   const btn = $('run-btn');
   btn.disabled = true;
   status.className = 'status';
-  status.textContent = 'segmenting + typing… (a few seconds)';
+  status.textContent = 'uploading…';
   try {
-    const data = await api('/api/sessions', { method: 'POST', body: fd });
+    const fd = new FormData();
+    fd.append('image', imgFile);
+    const info = await api('/api/uploads', { method: 'POST', body: fd });
+    if (info.prestitched) {
+      status.textContent = 'segmenting + typing… (a few seconds)';
+      await createSession({ upload_id: info.upload_id });
+    } else {
+      status.textContent = '';
+      await openLayoutStep(info);
+    }
     status.textContent = '';
-    await setState(data, { refit: true, newSession: true });
-    await Promise.all([loadSessions(), loadTrays()]);
   } catch (e) {
     status.className = 'status error';
     status.textContent = e.message;
@@ -158,8 +205,25 @@ async function runPipeline(ev) {
   }
 }
 
+async function relayout() {
+  if (!state.sid) return;
+  try {
+    const info = await api(`/api/sessions/${state.sid}/relayout`, { method: 'POST' });
+    // re-type against the same stored tray
+    if (info.tray_store_name) {
+      $('tray-file').value = '';
+      $('tray-select').value = info.tray_store_name;
+    }
+    await openLayoutStep(info, { layout: info.layout, params: info.params });
+  } catch (e) {
+    $('upload-status').className = 'status error';
+    $('upload-status').textContent = e.message;
+  }
+}
+
 async function openSession(sid) {
   try {
+    LayoutEditor.close();
     const data = await api(`/api/sessions/${sid}`);
     await setState(data, { refit: true, newSession: true });
     loadSessions();
@@ -216,8 +280,16 @@ async function setState(data, { refit = false, newSession = false,
   }
   if (state.showMask && !state.maskCanvas) await loadMask();
 
-  $('placeholder').hidden = true;
-  $('workspace').hidden = false;
+  // a background recompute of the same session (queuePush) must not close
+  // an open layout editor; only a new / opened session replaces it
+  if (newSession || $('layout-step').hidden) {
+    $('placeholder').hidden = true;
+    $('layout-step').hidden = true;
+    $('workspace').hidden = false;
+  }
+  $('relayout-btn').hidden = !data.has_original;
+  $('lane-source').textContent = data.lane_assignment === 'layout'
+    ? 'lanes from confirmed layout' : '';
   $('session-info').textContent =
     `${data.image_name} × ${data.tray_name}  (${data.id})`;
   $('dl-typing').href = `/api/sessions/${data.id}/typing.json`;

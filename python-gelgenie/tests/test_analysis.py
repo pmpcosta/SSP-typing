@@ -24,7 +24,9 @@ import pytest
 from ssp.analysis import (
     DEFAULT_BP_SLOPE,
     GelAnalysis,
+    LaneMap,
     analyse_gel,
+    assign_to_slots,
     cluster_lanes,
     estimate_bp,
 )
@@ -233,3 +235,61 @@ def test_g26160_full_analysis():
     positives = [l.mix for l in ga.lanes if l.positive]
     assert positives == [19, 21, 23, 26, 40, 41, 63, 70, 76, 84]
     assert ga.slope_b == pytest.approx(81, abs=6)
+
+
+# ---------- known lane geometry (LaneMap from a layout manifest) ----------
+
+def _two_panel_map(n_per=4, pitch=50.0, panel_start=(0.0, 300.0)):
+    slots, panels = [], []
+    for p, x0 in enumerate(panel_start):
+        slots += [(x0 + i * pitch, x0 + (i + 1) * pitch) for i in range(n_per)]
+        panels.append((p * n_per, (p + 1) * n_per - 1))
+    return LaneMap(slots=slots, panels=panels)
+
+
+def test_lane_map_handles_empty_lane_next_to_seam():
+    # panel 2's first lane (mix 5) is empty: by band gaps this is
+    # indistinguishable from a wider seam, so gap clustering cannot recover it
+    lm = _two_panel_map()
+    bands = [_band(c, 400, area=400) for i, c in enumerate(lm.centers) if i != 4]
+    tray = _tray(8)
+    with pytest.raises(ValueError):
+        analyse_gel(bands, tray)
+    ga = analyse_gel(bands, tray, lane_map=lm)
+    assert [l.mix for l in ga.lanes if not l.valid] == [5]
+    assert ga.panels == [(1, 4), (5, 8)]
+    assert [l.center_x for l in ga.lanes] == lm.centers
+
+
+def test_lane_map_panels_override_seam_detection():
+    # uniform pitch (no seam) but the map says two panels: controls are fitted
+    # per panel, so a step in control height between panels is tolerated
+    lm = _two_panel_map(panel_start=(0.0, 200.0))
+    bands = [_band(c, 400 if i < 4 else 430, area=400) for i, c in enumerate(lm.centers)]
+    ga = analyse_gel(bands, _tray(8), lane_map=lm)
+    assert ga.panels == [(1, 4), (5, 8)]
+    assert all(l.valid for l in ga.lanes)
+    assert ga.lanes[4].control_y == 430
+
+
+def test_lane_map_ignores_bands_between_strips_with_warning():
+    lm = _two_panel_map()
+    bands = [_band(c, 400, area=400) for c in lm.centers] + [_band(250, 380)]
+    ga = analyse_gel(bands, _tray(8), lane_map=lm)
+    assert all(l.valid for l in ga.lanes)
+    assert any("outside every lane slot" in w for w in ga.warnings)
+
+
+def test_lane_map_lane_count_must_match_tray():
+    with pytest.raises(ValueError, match="8 lanes but the tray has 6"):
+        analyse_gel([], _tray(6), lane_map=_two_panel_map())
+
+
+def test_assign_to_slots_edges_and_tolerance():
+    slots = [(0.0, 50.0), (50.0, 100.0), (200.0, 250.0)]
+    bands = [_band(x, 100) for x in (49.9, 50.0, -20.0, 124.0, 126.0, 160.0)]
+    lane_bands, outside = assign_to_slots(bands, slots)
+    assert [b.centroid_x for b in lane_bands[0]] == [49.9, -20.0]
+    assert [b.centroid_x for b in lane_bands[1]] == [50.0, 124.0]
+    assert lane_bands[2] == []
+    assert [b.centroid_x for b in outside] == [126.0, 160.0]

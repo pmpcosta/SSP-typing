@@ -22,6 +22,10 @@ segment  Run a GelGenie ONNX model over a gel image and write a binary mask
          the QuPath extension's interactive segmentation.
 type     Full pipeline: segment a gel image, match bands against a tray sheet
          (xlsx/json), and report HLA allele calls with ambiguity + QC flags.
+preprocess
+         Cut a raw gel photo (e.g. 3x32 or 6x16 lane blocks) into its lane
+         rows and join them into the single 96-lane strip typing expects,
+         with overlay images for visual confirmation.
 """
 
 from __future__ import annotations
@@ -44,6 +48,19 @@ from ssp.bands import (
     mask_to_bands,
 )
 from ssp.inference import GelGenieONNX
+from ssp.layout import (
+    PRESETS,
+    STITCHED,
+    Layout,
+    LayoutError,
+    Manifest,
+    is_prestitched,
+    preset_layout,
+    render_overlay,
+    render_stitched,
+    stitch,
+)
+from ssp.layout_detect import detect_layout
 from ssp.report import build_report
 from ssp.trays import Tray, load_tray_xlsx
 from ssp.typing_engine import type_sample
@@ -267,21 +284,51 @@ def load_tray(path: str) -> Tray:
               help="Override bp calibration slope (px per ln(bp)); default auto-calibrates.")
 @click.option("--match-tol", type=float, default=0.25, show_default=True,
               help="Relative tolerance for matching a band to its lane's product size.")
+@click.option("--layout", "layout_path", type=click.Path(exists=True, dir_okay=False),
+              default=None,
+              help="IMAGE is a raw gel photo: join it with this layout.json (from "
+                   "`preprocess`) first, and take lanes from the known geometry.")
+@click.option("--lanes", "lanes_path", type=click.Path(exists=True, dir_okay=False),
+              default=None,
+              help="IMAGE is a joined strip from `preprocess`: take lanes from its "
+                   "lanes.json instead of inferring them from band gaps.")
 def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
-             min_area, lane_gap, slope_b, match_tol) -> None:
+             min_area, lane_gap, slope_b, match_tol, layout_path, lanes_path) -> None:
     """Segment a gel image and interpret it against an SSP tray definition.
 
     Writes mask.png, typing.json (machine-readable) and report.txt (human
-    summary) into the output directory, and echoes the summary.
+    summary) into the output directory, and echoes the summary. With
+    --layout, the joined strip (stitched.png) and lanes.json are written too,
+    and mask.png refers to the joined strip.
     """
+    if layout_path and lanes_path:
+        raise click.UsageError("use either --layout or --lanes, not both")
     raw = np.asarray(imageio.imread(image))
-    if dtype_max is None:
-        dtype_max = _infer_dtype_max(raw)
 
     try:
         tray_obj = load_tray(tray)
     except ValueError as e:
         raise click.ClickException(str(e))
+
+    manifest: Optional[Manifest] = None
+    try:
+        if layout_path:
+            layout = Layout.load_json(layout_path)
+            raw, manifest = stitch(raw, layout, expected_lanes=len(tray_obj.lanes))
+        elif lanes_path:
+            manifest = Manifest.load_json(lanes_path)
+            size = (raw.shape[1], raw.shape[0])
+            if not manifest.stitched_input and tuple(manifest.image_size) != size:
+                raise LayoutError(
+                    f"{os.path.basename(lanes_path)} describes a "
+                    f"{manifest.image_size[0]}x{manifest.image_size[1]} image but "
+                    f"{os.path.basename(image)} is {size[0]}x{size[1]}")
+    except LayoutError as e:
+        raise click.ClickException(f"layout: {e}")
+    lane_map = manifest.to_lane_map() if manifest else None
+
+    if dtype_max is None:
+        dtype_max = _infer_dtype_max(raw)
     model_obj = GelGenieONNX(model_path=str(_resolve_model(model)))
     mask, bands = segment_image(
         raw, model_obj, invert=invert,
@@ -289,7 +336,7 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
     )
     try:
         ga = analyse_gel(bands, tray_obj, lane_gap=lane_gap, slope_b=slope_b,
-                         match_tol=match_tol)
+                         match_tol=match_tol, lane_map=lane_map)
     except ValueError as e:
         raise click.ClickException(str(e))
     result = type_sample(ga, tray_obj)
@@ -297,12 +344,20 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
     os.makedirs(output, exist_ok=True)
     mask_path = os.path.join(output, "mask.png")
     imageio.imwrite(mask_path, (mask * 255).astype(np.uint8))
+    extra_paths = []
+    if layout_path:
+        stitched_path = os.path.join(output, "stitched.png")
+        imageio.imwrite(stitched_path, raw)
+        lanes_out = os.path.join(output, "lanes.json")
+        manifest.save_json(lanes_out)
+        extra_paths = [("joined", stitched_path), ("lanes", lanes_out)]
 
     payload = {
         "image": os.path.basename(image),
         "tray": tray_obj.name,
         "analysis": {
             "slope_b": round(ga.slope_b, 2),
+            "lane_assignment": "layout" if lane_map else "band-gaps",
             "panels": [list(p) for p in ga.panels],
             "warnings": ga.warnings,
             "invalid_lanes": [l.mix for l in ga.lanes if not l.valid],
@@ -322,6 +377,108 @@ def type_cmd(image, tray, model, output, invert, percentile_norm, dtype_max,
     click.echo(f"\n  mask   -> {mask_path}")
     click.echo(f"  typing -> {typing_path}")
     click.echo(f"  report -> {report_path}")
+    for name, p in extra_paths:
+        click.echo(f"  {name:6s} -> {p}")
+
+
+@cli.command()
+@click.argument("image", type=click.Path(exists=True, dir_okay=False))
+@click.option("--output", "-o", required=True, type=click.Path(file_okay=False),
+              help="Output directory for stitched.png, layout.json, lanes.json "
+                   "and the overlay check images.")
+@click.option("--preset", type=click.Choice(list(PRESETS) + [STITCHED]), default=None,
+              help="Gel format: 3x32 (one gel, 3 rows of 32), 6x16 (two gel pieces "
+                   "side by side, 3 rows of 16 each) or stitched (already joined; "
+                   "copied unchanged). Outlines and row cuts are detected "
+                   "automatically; always confirm them on overlay.png.")
+@click.option("--detect/--no-detect", default=True, show_default=True,
+              help="With --preset: detect gel outlines and row cuts (default), or "
+                   "start from an even split of the whole photo.")
+@click.option("--layout", "layout_path", type=click.Path(exists=True, dir_okay=False),
+              default=None, help="Layout JSON to apply (e.g. an adjusted layout.json "
+                                 "from an earlier run). Rescaled if the image size differs.")
+@click.option("--lanes", "expected_lanes", type=int, default=96, show_default=True,
+              help="Expected total lane count; 0 skips the check.")
+@click.option("--gap", type=float, default=None,
+              help="Background gap between joined strips in px (default: 2 lane pitches).")
+def preprocess(image, output, preset, layout_path, detect, expected_lanes, gap) -> None:
+    """Rearrange a raw gel photo into a single joined lane strip.
+
+    Writes stitched.png (input for `type`), layout.json (the cut geometry;
+    edit it and pass it back with --layout), lanes.json (where each mix
+    landed), overlay.png (the cuts drawn on the original) and
+    stitched_lanes.png (the joined strip with mix numbers). Check both
+    images before typing.
+    """
+    if preset and layout_path:
+        raise click.UsageError("use either --preset or --layout, not both")
+    raw = np.asarray(imageio.imread(image))
+    size = (raw.shape[1], raw.shape[0])
+    notes: List[str] = []
+    source = "layout file" if layout_path else None
+
+    try:
+        if layout_path:
+            layout = Layout.load_json(layout_path)
+            if tuple(layout.image_size) != size:
+                click.echo(f"note: layout was made for {layout.image_size[0]}x"
+                           f"{layout.image_size[1]}; rescaled to {size[0]}x{size[1]}")
+                layout = layout.scaled_to(size)
+        elif preset and preset != STITCHED and detect:
+            try:
+                det = detect_layout(raw, preset)
+                layout, source = det.layout, "detected"
+                notes += det.warnings
+            except LayoutError as e:
+                layout, source = preset_layout(preset, size), "even split"
+                notes.append(f"automatic detection failed ({e}); using an even split")
+        elif preset:
+            layout = preset_layout(preset, size)
+            source = "even split"
+        elif is_prestitched(size):
+            layout = preset_layout(STITCHED, size)
+        else:
+            raise click.UsageError(
+                f"{os.path.basename(image)} ({size[0]}x{size[1]}) looks like a raw gel "
+                f"photo; choose --preset ({', '.join(PRESETS)}) or pass --layout")
+        if gap is not None:
+            layout.gap = gap
+        warnings = notes + layout.validate(expected_lanes or None)
+        stitched, manifest = stitch(raw, layout)
+    except LayoutError as e:
+        raise click.ClickException(f"layout: {e}")
+
+    os.makedirs(output, exist_ok=True)
+    paths = {
+        "stitched": os.path.join(output, "stitched.png"),
+        "layout": os.path.join(output, "layout.json"),
+        "lanes": os.path.join(output, "lanes.json"),
+        "overlay": os.path.join(output, "overlay.png"),
+        "lane check": os.path.join(output, "stitched_lanes.png"),
+    }
+    imageio.imwrite(paths["stitched"], stitched)
+    layout.save_json(paths["layout"])
+    with open(paths["lanes"], "w") as f:
+        json.dump(manifest.to_dict(), f, indent=2)
+    if layout.is_stitched:
+        del paths["overlay"], paths["lane check"]
+        click.echo(f"{os.path.basename(image)} is already a joined strip; copied unchanged.")
+    else:
+        imageio.imwrite(paths["overlay"], render_overlay(raw, layout))
+        imageio.imwrite(paths["lane check"], render_stitched(stitched, manifest))
+        click.echo(f"Joined {len(manifest.strips)} strip(s), {len(manifest.lanes)} lanes "
+                   f"-> {stitched.shape[1]}x{stitched.shape[0]}")
+        if source == "even split":
+            click.echo("Layout is an even split of the photo: check overlay.png, "
+                       "adjust layout.json and re-run with --layout.")
+        elif source == "detected":
+            click.echo("Layout was detected automatically: confirm the cuts and lane "
+                       "numbers on overlay.png before typing; if anything is off, edit "
+                       "layout.json and re-run with --layout.")
+    for w in warnings:
+        click.echo(f"warning: {w}")
+    for name, p in paths.items():
+        click.echo(f"  {name:10s} -> {p}")
 
 
 DEFAULT_DATA_DIR = os.path.expanduser("~/.local/share/ssptyping")

@@ -39,6 +39,11 @@ Known limitation: on stitched composites, a panel seam and a missing lane are
 distinguished only by gap ratio (~2x = missing lane, ~>2.4x = seam). A wholly
 empty lane adjacent to a seam could confuse numbering; the lane count is
 validated against the tray, and mismatches raise rather than silently shift.
+
+When the lane geometry is known (a :class:`LaneMap`, built from the manifest
+that :mod:`ssp.layout` writes when it joins a raw gel photo), steps 1-2 are
+replaced: bands are assigned to their lane slot by x position and each joined
+strip is its own panel, so neither empty lanes nor seams need guessing.
 """
 
 from __future__ import annotations
@@ -145,6 +150,45 @@ def cluster_lanes(
 
 
 @dataclass
+class LaneMap:
+    """Known lane geometry: one x-slot per mix, plus panel boundaries."""
+
+    slots: List[Tuple[float, float]]   # (x0, x1) per lane, in mix order
+    panels: List[Tuple[int, int]]      # inclusive 0-based lane-index ranges
+
+    @property
+    def centers(self) -> List[float]:
+        return [(a + b) / 2.0 for a, b in self.slots]
+
+
+def assign_to_slots(
+    bands: Sequence[Union[Band, Dict]],
+    slots: Sequence[Tuple[float, float]],
+) -> Tuple[List[List[Band]], List[Band]]:
+    """Put each band in the slot containing its x-centroid; a band just
+    outside a slot (within half a slot width) goes to the nearest one. Returns
+    ``(lane_bands, outside)`` where ``outside`` are bands in no slot's reach
+    (e.g. in the gap between joined strips)."""
+    lane_bands: List[List[Band]] = [[] for _ in slots]
+    outside: List[Band] = []
+    for b in (as_band(b) for b in bands):
+        x = b.centroid_x
+        best, best_d = None, math.inf
+        for i, (x0, x1) in enumerate(slots):
+            if x0 <= x < x1:  # half-open, like assign_lanes_by_edges
+                best, best_d = i, 0.0
+                break
+            d = x0 - x if x < x0 else x - x1
+            if d < best_d:
+                best, best_d = i, d
+        if best is not None and best_d <= 0.5 * (slots[best][1] - slots[best][0]):
+            lane_bands[best].append(b)
+        else:
+            outside.append(b)
+    return lane_bands, outside
+
+
+@dataclass
 class BandCall:
     """One detected band with its size estimate and classification."""
 
@@ -243,9 +287,13 @@ def _fit_controls(
     lane_mixes: List[int],
     ctrl_bps: List[int],
     centers: List[float],
+    panels: Optional[List[Tuple[int, int]]] = None,
 ) -> Tuple[Dict[int, Optional[Band]], float, List[Tuple[int, int]], bool]:
-    """Pick control bands per lane; returns (picks, slope_b, panels, calibrated)."""
-    panels = _panel_ranges(centers)
+    """Pick control bands per lane; returns (picks, slope_b, panels, calibrated).
+
+    ``panels`` (inclusive lane-index ranges) overrides seam detection."""
+    if panels is None:
+        panels = _panel_ranges(centers)
     picks: Dict[int, Optional[Band]] = {}
 
     groups: List[Tuple[int, List[int]]] = []  # (control_bp, lane indices)
@@ -297,17 +345,36 @@ def _fit_controls(
     return picks, slope_b, panels, bool(slope_estimates)
 
 
+def _cluster_centers(lane_bands: List[List[Band]]) -> List[float]:
+    """Mean band x per lane; an empty lane takes the midpoint of its nearest
+    non-empty neighbours (interpolated across a run of empties)."""
+    centers: List[float] = []
+    for i, lb in enumerate(lane_bands):
+        if lb:
+            centers.append(float(np.mean([b.centroid_x for b in lb])))
+            continue
+        prev = next((centers[j] for j in range(i - 1, -1, -1) if lane_bands[j]), None)
+        nxt = next((float(np.mean([b.centroid_x for b in lane_bands[j]]))
+                    for j in range(i + 1, len(lane_bands)) if lane_bands[j]), None)
+        near = [v for v in (prev, nxt) if v is not None]
+        centers.append(float(np.mean(near)) if near else 0.0)
+    return centers
+
+
 def analyse_gel(
     bands: Sequence[Union[Band, Dict]],
     tray: Tray,
     lane_gap: float = 20.0,
     slope_b: Optional[float] = None,
     match_tol: float = 0.25,
+    lane_map: Optional[LaneMap] = None,
 ) -> GelAnalysis:
     """Full post-segmentation analysis against a tray definition.
 
     Lane index i (left-to-right) is mapped to tray mix i+1; the caller-provided
-    ``slope_b`` overrides auto-calibration when given.
+    ``slope_b`` overrides auto-calibration when given. With ``lane_map``,
+    lanes and panels come from the known geometry instead of band gaps
+    (``lane_gap`` is then unused).
     """
     mixes = [l.mix for l in sorted(tray.lanes, key=lambda l: l.mix)]
     if mixes != list(range(1, len(mixes) + 1)):
@@ -315,25 +382,30 @@ def analyse_gel(
     ctrl_bps_all = {l.mix: l.control_bp for l in tray.lanes}
     products_all = {l.mix: l.product_bp for l in tray.lanes}
 
-    lane_bands = cluster_lanes(bands, expected_count=len(mixes), gap=lane_gap)
-    centers: List[float] = []
-    for i, lb in enumerate(lane_bands):
-        if lb:
-            centers.append(float(np.mean([b.centroid_x for b in lb])))
-        else:  # empty lane: midpoint of neighbours (interpolated if run of empties)
-            prev = next((centers[j] for j in range(i - 1, -1, -1) if lane_bands[j]), None)
-            nxt = next((float(np.mean([b.centroid_x for b in lane_bands[j]]))
-                        for j in range(i + 1, len(lane_bands)) if lane_bands[j]), None)
-            centers.append(np.mean([v for v in (prev, nxt) if v is not None])
-                           if (prev is not None or nxt is not None) else 0.0)
+    warnings: List[str] = []
+    known_panels: Optional[List[Tuple[int, int]]] = None
+    if lane_map is not None:
+        if len(lane_map.slots) != len(mixes):
+            raise ValueError(
+                f"lane layout has {len(lane_map.slots)} lanes but the tray has "
+                f"{len(mixes)} mixes")
+        lane_bands, outside = assign_to_slots(bands, lane_map.slots)
+        if outside:
+            warnings.append(
+                f"{len(outside)} band(s) lie outside every lane slot of the layout "
+                "(e.g. between joined strips) and were ignored")
+        known_panels = [tuple(p) for p in lane_map.panels]
+        centers = lane_map.centers
+    else:
+        lane_bands = cluster_lanes(bands, expected_count=len(mixes), gap=lane_gap)
+        centers = _cluster_centers(lane_bands)
 
     picks, slope_auto, panels, calibrated = _fit_controls(
-        lane_bands, mixes, [ctrl_bps_all[m] for m in mixes], centers)
+        lane_bands, mixes, [ctrl_bps_all[m] for m in mixes], centers, known_panels)
     slope = float(slope_b) if slope_b is not None else slope_auto
     panels_mix = [(mixes[p0], mixes[p1]) for p0, p1 in panels]
 
     lanes_out: List[LaneCall] = []
-    warnings: List[str] = []
     if slope_b is None and not calibrated:
         warnings.append(
             f"bp slope not calibratable (no panel hosts two control sizes); "
