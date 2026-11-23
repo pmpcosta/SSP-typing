@@ -170,3 +170,16 @@ def test_infer_dtype_max():
     assert _infer_dtype_max(np.zeros((2, 2), dtype=np.uint16)) == 65535.0
     assert _infer_dtype_max(np.zeros((2, 2), dtype=np.float32)) == 1.0
     assert _infer_dtype_max(np.zeros((2, 2), dtype=np.float64)) == 1.0
+
+
+def test_segment_image_detects_polarity_unless_forced():
+    from ssp.cli import detect_invert
+    raw = np.zeros((64, 96), dtype=np.uint8)
+    raw[20:30, 15:25] = 255
+    neg = 255 - raw
+    assert detect_invert(raw) is False and detect_invert(neg) is True
+    model = GelGenieONNX(session=FakeSession())
+    _, bands = segment_image(neg, model, dtype_max=255, min_area=1)
+    assert len(bands) == 1 and bands[0].area == 100
+    _, forced = segment_image(neg, model, invert=False, dtype_max=255, min_area=1)
+    assert len(forced) == 1 and forced[0].area == 96 * 64 - 100

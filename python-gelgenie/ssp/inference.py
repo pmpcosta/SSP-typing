@@ -127,13 +127,16 @@ class GelGenieONNX:
     def segment(
         self,
         raw_image: np.ndarray,
-        invert: bool = False,
+        invert: Optional[bool] = None,
         data_max_norm: bool = True,
         dtype_max: float = 255.0,
     ) -> np.ndarray:
         """Convenience path from a raw (uint8/uint16/RGB) image to a binary
-        mask: normalize, then :meth:`predict_mask`."""
+        mask: normalize, then :meth:`predict_mask`. ``invert=None`` picks the
+        polarity from the image (:func:`ssp.preprocessing.has_light_background`)."""
         gray = preprocessing.normalize_image(
             raw_image, data_max_norm=data_max_norm, dtype_max=dtype_max
         )
+        if invert is None:
+            invert = preprocessing.has_light_background(gray)
         return self.predict_mask(gray, invert=invert)

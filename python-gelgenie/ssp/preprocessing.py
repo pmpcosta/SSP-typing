@@ -29,12 +29,14 @@ normalized images are not quantized to 8-bit.
   (RGB channel averaging, then either datatype-max or 0.1/99.9 percentile
   normalization to [0, 1]).
 * ``invert`` mirrors ``ImageInvert`` (1 - x).
+* ``has_light_background`` picks the polarity (not in QuPath, where the user
+  ticks invert): GelGenie models expect bright bands on a dark background.
 * ``squish_channels`` mirrors ``ChannelSquisher`` (mean over the channel axis).
 """
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -90,6 +92,37 @@ def remove_padding(arr: np.ndarray, pads: PadWidth) -> np.ndarray:
 def invert(arr: np.ndarray) -> np.ndarray:
     """Mirror of ``ImageInvert``: return ``1 - arr`` (assumes [0, 1] float)."""
     return 1.0 - arr
+
+
+def has_light_background(gray: np.ndarray) -> bool:
+    """True for a dark-bands-on-light gel, which must be inverted for the model.
+
+    Bands, wells and labels cover a minority of a gel photo, so the median is
+    the background level. Gels photographed under UV/blue light have a dark
+    background (G_26160: median 0.20); inverted prints and "negative" exports
+    have a light one (Gel_05 / Gel_01: 0.73).
+    """
+    return float(np.median(gray)) >= 0.5
+
+
+def infer_dtype_max(raw: np.ndarray) -> float:
+    """Datatype upper bound used for ``data_max_norm`` normalization."""
+    if raw.dtype == np.uint16:
+        return 65535.0
+    if np.issubdtype(raw.dtype, np.floating):
+        return 1.0  # QuPath pixel types report 1.0 as the float upper bound
+    return 255.0
+
+
+def detect_invert(raw: np.ndarray, data_max_norm: bool = True,
+                  dtype_max: Optional[float] = None) -> bool:
+    """Whether ``raw`` is a dark-bands-on-light gel that needs inverting,
+    judged on the image exactly as the model will be fed it (the default
+    ``dtype_max`` is the one inferred from ``raw``'s dtype)."""
+    raw = np.asarray(raw)
+    gray = normalize_image(raw, data_max_norm=data_max_norm,
+                           dtype_max=infer_dtype_max(raw) if dtype_max is None else dtype_max)
+    return has_light_background(gray)
 
 
 def squish_channels(arr: np.ndarray) -> np.ndarray:

@@ -199,3 +199,29 @@ def test_cli_type_real_gel_and_sheet(tmp_path):
                   for x in ('C*04:01', 'C*04:02', 'C*04:03', 'C*18:01')
                   for y in ('C*08:01', 'C*08:02', 'C*08:03')}
     assert set(map(tuple, c['best_pairs'])) == expected_c
+
+
+def test_cli_type_negative_image_needs_no_invert_flag(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_mod, 'GelGenieONNX', _fake_model_factory)
+    img = tmp_path / 'gel.png'
+    _synth_ssp_image(img)
+    imageio.imwrite(str(img), 255 - imageio.imread(str(img)))  # dark bands on light
+    tray_path = tmp_path / 'tray.json'
+    _synth_tray(tray_path)
+    model_path = tmp_path / 'model.onnx'
+    model_path.write_bytes(b'x')
+    out = tmp_path / 'out'
+    result = CliRunner().invoke(cli, ['type', str(img), '--tray', str(tray_path),
+                                      '-m', str(model_path), '-o', str(out)])
+    assert result.exit_code == 0, result.output
+    a = json.loads((out / 'typing.json').read_text())['typing']['loci']['A']
+    assert a['positives'] == [1, 2, 3] and a['invalid'] == []
+    mask = imageio.imread(str(out / 'mask.png'))
+    assert mask[50, 25] > 0 and mask[0, 0] == 0
+    # --no-invert forces the model to see the light background as the band
+    forced = tmp_path / 'forced'
+    result = CliRunner().invoke(cli, ['segment', str(img), '-m', str(model_path),
+                                      '-o', str(forced), '--no-invert'])
+    assert result.exit_code == 0, result.output
+    mask = imageio.imread(str(forced / 'mask.png'))
+    assert mask[50, 25] == 0 and mask[0, 0] > 0

@@ -459,3 +459,29 @@ def test_tray_store_same_name_different_content_kept(client):
     names = [t['name'] for t in client.get('/api/trays').json()]
     assert len(names) == 2 and 't' in names
     assert any(n.startswith('t-') for n in names)
+
+
+def test_negative_image_session_detects_polarity(client):
+    from io import BytesIO
+    neg = 255 - imageio.imread(BytesIO(_synth_image_bytes()))
+    buf = BytesIO()
+    imageio.imwrite(buf, neg, format='png')
+    r = client.post('/api/sessions', files={
+        'image': ('neg.png', buf.getvalue(), 'image/png'),
+        'tray': ('tray.json', _synth_tray_json(), 'application/json')})
+    assert r.status_code == 200, r.text
+    s = r.json()
+    assert s['params']['invert'] is True and s['params']['invert_auto'] is True
+    assert len(s['bands']) == 8
+    assert s['typing']['loci']['A']['positives'] == [1, 2, 3]
+    pos = _create(client)
+    assert pos['params']['invert'] is False and pos['params']['invert_auto'] is True
+
+
+def test_forced_polarity_is_recorded(client):
+    r = client.post('/api/sessions', data={'invert': 'false'}, files={
+        'image': ('gel.png', _synth_image_bytes(), 'image/png'),
+        'tray': ('tray.json', _synth_tray_json(), 'application/json')})
+    assert r.status_code == 200, r.text
+    assert r.json()['params']['invert'] is False
+    assert r.json()['params']['invert_auto'] is False

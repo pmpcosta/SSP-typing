@@ -259,7 +259,7 @@ def _band_errors(raw, layout):
     centre (at the band's height), plus the median lane pitch."""
     from scipy import ndimage as ndi
     from ssp.layout_detect import _band_signal, _bands_bright, _gray01
-    band = _band_signal(_bands_bright(_gray01(raw)), 20)
+    band = _band_signal(_bands_bright(_gray01(raw), raw), 20)
     errs, pitches = [], []
     for b in layout.blocks:
         for r in b.rows:
@@ -342,3 +342,32 @@ def test_g26160_detected_layout_types_like_hand_stitched(tmp_path):
     assert a['typing'] == b['typing']
     for k in ('positive_lanes', 'invalid_lanes', 'panels', 'warnings'):
         assert a['analysis'][k] == b['analysis'][k], k
+
+
+@pytest.mark.skipif(not present, reason="private real gel photos not available")
+@pytest.mark.parametrize("name", present)
+def test_real_gel_polarity_is_detected(name):
+    """G_26160 is a UV photo (bright bands on dark); the others are negative
+    exports. Judged both on the raw photo and on the joined strip."""
+    from ssp.cli import detect_invert
+    from ssp.layout import stitch
+    raw = np.asarray(imageio.imread(PRE / f"{name}_before.jpg"))
+    strip, _ = stitch(raw, Layout.load_json(str(PRE / f"{name}.layout.json")))
+    expected = name != "G_26160"
+    assert detect_invert(raw) is expected
+    assert detect_invert(strip) is expected
+
+
+def test_layout_polarity_matches_segmentation_after_the_stretch():
+    """88% background at 180, 10% bands at 120, 2% labels at 255: the
+    percentile stretch puts the background at ~0.44, below the 0.5 cut, but
+    the model sees ~0.71 and inverts. Layout must flip too (CodeRabbit #3)."""
+    from ssp.layout_detect import _bands_bright, _gray01
+    from ssp.preprocessing import detect_invert, has_light_background
+    img = np.full((100, 100), 180, dtype=np.uint8)
+    img[:10] = 120
+    img[10:12] = 255
+    g = _gray01(img)
+    assert not has_light_background(g) and detect_invert(img)  # the trap
+    gb = _bands_bright(g, img)
+    assert gb[5, 50] > gb[50, 50]  # bands brighter than the background

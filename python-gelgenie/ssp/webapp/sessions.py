@@ -67,7 +67,7 @@ import numpy as np
 
 from ssp.analysis import analyse_gel
 from ssp.bands import Band
-from ssp.cli import _infer_dtype_max, segment_image
+from ssp.cli import _infer_dtype_max, detect_invert, segment_image
 from ssp.inference import GelGenieONNX
 from ssp.layout import (
     PRESETS,
@@ -334,10 +334,15 @@ class SessionStore:
                                  (sdir / meta["original_file"]).read_bytes())
         info["layout"] = json.loads((sdir / "layout.json").read_text())
         info["tray_store_name"] = meta.get("tray_store_name")
-        # segmentation settings, so the corrected session is segmented alike
+        # segmentation settings, so the corrected session is segmented alike;
+        # a detected polarity is re-detected on the new cut rather than pinned
+        # (sessions from before detection carry the old checkbox, so only an
+        # explicit invert_auto=False counts as forced)
         params = meta.get("params", {})
-        info["params"] = {k: params[k] for k in ("min_area", "invert", "percentile_norm")
-                          if k in params}
+        keys = ["min_area", "percentile_norm"]
+        if params.get("invert_auto") is False:
+            keys.append("invert")
+        info["params"] = {k: params[k] for k in keys if k in params}
         return info
 
     # ---------- sessions ----------
@@ -356,7 +361,7 @@ class SessionStore:
                        tray_bytes: Optional[bytes] = None,
                        tray_name: Optional[str] = None,
                        min_area: Optional[int] = None,
-                       invert: bool = False,
+                       invert: Optional[bool] = None,
                        percentile_norm: bool = False,
                        upload_id: Optional[str] = None,
                        layout: Optional[Dict] = None) -> Dict:
@@ -413,10 +418,18 @@ class SessionStore:
                 manifest.save_json(str(sdir / "lanes.json"))
             h, w = raw.shape[:2]
 
+            dtype_max = _infer_dtype_max(raw)
+            # polarity is detected unless the caller forces it; the detected
+            # value is recorded so the run is reproducible
+            invert_auto = invert is None
+            if invert_auto:
+                invert = detect_invert(raw, data_max_norm=not percentile_norm,
+                                       dtype_max=dtype_max)
             params = {
                 "min_area": int(min_area if min_area is not None
                                 else self.config.default_min_area),
                 "invert": bool(invert),
+                "invert_auto": invert_auto,
                 "percentile_norm": bool(percentile_norm),
                 "match_tol": self.config.default_match_tol,
                 "lane_gap": self.config.default_lane_gap,
@@ -425,7 +438,7 @@ class SessionStore:
             mask, bands = segment_image(
                 raw, model, invert=params["invert"],
                 data_max_norm=not params["percentile_norm"],
-                dtype_max=_infer_dtype_max(raw), min_area=params["min_area"],
+                dtype_max=dtype_max, min_area=params["min_area"],
             )
         except ValueError:
             shutil.rmtree(sdir, ignore_errors=True)

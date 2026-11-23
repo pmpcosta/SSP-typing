@@ -103,3 +103,14 @@ def test_real_model_inverted_polarity_finds_nothing():
     model = GelGenieONNX(model_path=MODEL_PATH)
     mask = model.segment(img, invert=True, data_max_norm=True, dtype_max=255)
     assert mask.sum() < 0.01 * mask.size  # at most a speck of noise
+
+
+@requires_model
+def test_real_model_detects_a_negative_gel():
+    """The same gel exported dark-bands-on-light segments alike, unprompted."""
+    img, _ = _synthetic_gel(seed=7)
+    model = GelGenieONNX(model_path=MODEL_PATH)
+    pos = model.segment(img, data_max_norm=True, dtype_max=255)
+    neg = model.segment(255 - img, data_max_norm=True, dtype_max=255)
+    assert pos.sum() > 0
+    assert (pos != neg).mean() < 0.002

@@ -40,6 +40,7 @@ import rich_click as click
 
 from ssp import __version__
 from ssp import models as model_zoo
+from ssp import preprocessing
 from ssp.analysis import analyse_gel
 from ssp.bands import (
     Band,
@@ -78,7 +79,7 @@ def cli() -> None:
 def segment_image(
     raw: np.ndarray,
     model: GelGenieONNX,
-    invert: bool = False,
+    invert: Optional[bool] = None,
     data_max_norm: bool = True,
     dtype_max: float = 255.0,
     min_area: int = 1,
@@ -88,7 +89,8 @@ def segment_image(
     """Core segmentation pipeline: raw image -> binary mask -> banded lanes.
 
     Kept separate from the CLI command so it can be reused (e.g. by the future
-    web app) and unit-tested without file I/O.
+    web app) and unit-tested without file I/O. ``invert=None`` detects the
+    polarity (see :func:`detect_invert`).
     """
     mask = model.segment(raw, invert=invert, data_max_norm=data_max_norm, dtype_max=dtype_max)
     bands = mask_to_bands(mask, min_area=min_area)
@@ -103,12 +105,8 @@ def segment_image(
     return mask, bands
 
 
-def _infer_dtype_max(raw: np.ndarray) -> float:
-    if raw.dtype == np.uint16:
-        return 65535.0
-    if np.issubdtype(raw.dtype, np.floating):
-        return 1.0  # QuPath pixel types report 1.0 as the float upper bound
-    return 255.0
+detect_invert = preprocessing.detect_invert
+_infer_dtype_max = preprocessing.infer_dtype_max
 
 
 def _resolve_model(explicit: Optional[str]):
@@ -195,7 +193,9 @@ def models_path(name) -> None:
                    "Universal model — see `ssp-typing models`).")
 @click.option("--output", "-o", required=True, type=click.Path(file_okay=False),
               help="Output directory for mask.png and bands.json.")
-@click.option("--invert", is_flag=True, help="Invert intensities before inference (dark bands on bright background).")
+@click.option("--invert/--no-invert", default=None,
+              help="Force the polarity: --invert for dark bands on a light "
+                   "background, --no-invert for bright on dark (default: detected).")
 @click.option("--percentile-norm", is_flag=True,
               help="Use 0.1/99.9 percentile normalization instead of datatype-max.")
 @click.option("--dtype-max", type=float, default=None,
@@ -270,7 +270,9 @@ def load_tray(path: str) -> Tray:
                    "Universal model — see `ssp-typing models`).")
 @click.option("--output", "-o", required=True, type=click.Path(file_okay=False),
               help="Output directory for mask.png, typing.json and report.txt.")
-@click.option("--invert", is_flag=True, help="Invert intensities before inference.")
+@click.option("--invert/--no-invert", default=None,
+              help="Force the polarity: --invert for dark bands on a light "
+                   "background, --no-invert for bright on dark (default: detected).")
 @click.option("--percentile-norm", is_flag=True,
               help="Use 0.1/99.9 percentile normalization instead of datatype-max.")
 @click.option("--dtype-max", type=float, default=None,
