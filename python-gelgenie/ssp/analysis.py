@@ -155,6 +155,9 @@ class LaneMap:
 
     slots: List[Tuple[float, float]]   # (x0, x1) per lane, in mix order
     panels: List[Tuple[int, int]]      # inclusive 0-based lane-index ranges
+    # strips start at y=0 just above their wells; bands above this y are in
+    # the well zone (well marks, loading smudges) and never taken as controls
+    well_zone: float = 0.0
 
     @property
     def centers(self) -> List[float]:
@@ -253,8 +256,14 @@ class GelAnalysis:
 
 def _densest_window_row(ys: np.ndarray, lanes: np.ndarray, width: float) -> Optional[float]:
     """Median y of the densest window; ties prefer more distinct lanes."""
+    return _densest_window(ys, lanes, width)[0]
+
+
+def _densest_window(ys: np.ndarray, lanes: np.ndarray,
+                    width: float) -> Tuple[Optional[float], int]:
+    """(median y, distinct lanes) of the densest window."""
     if len(ys) == 0:
-        return None
+        return None, 0
     order = np.argsort(ys)
     ys_s, lanes_s = ys[order], lanes[order]
     best = (0, 0, None)
@@ -264,7 +273,7 @@ def _densest_window_row(ys: np.ndarray, lanes: np.ndarray, width: float) -> Opti
         distinct = len(set(lanes_s[i:j].tolist()))
         if (count, distinct) > (best[0], best[1]):
             best = (count, distinct, float(np.median(ys_s[i:j])))
-    return best[2]
+    return best[2], best[1]
 
 
 def _panel_ranges(centers: Sequence[float]) -> List[Tuple[int, int]]:
@@ -288,10 +297,15 @@ def _fit_controls(
     ctrl_bps: List[int],
     centers: List[float],
     panels: Optional[List[Tuple[int, int]]] = None,
+    well_zone: float = 0.0,
 ) -> Tuple[Dict[int, Optional[Band]], float, List[Tuple[int, int]], bool]:
     """Pick control bands per lane; returns (picks, slope_b, panels, calibrated).
 
-    ``panels`` (inclusive lane-index ranges) overrides seam detection."""
+    ``panels`` (inclusive lane-index ranges) overrides seam detection.
+    Bands with y < ``well_zone`` are not control candidates, unless the rest
+    cannot give a control row in at least half of a group's lanes: a row of
+    well marks is in every lane and would otherwise outvote a control row
+    with one empty lane."""
     if panels is None:
         panels = _panel_ranges(centers)
     picks: Dict[int, Optional[Band]] = {}
@@ -307,12 +321,16 @@ def _fit_controls(
 
     for bp, group in groups:
         # rough control row: densest y-window over the group's bands
-        ys, ls = [], []
-        for i in group:
-            for b in lane_bands[i]:
-                ys.append(b.centroid_y)
-                ls.append(i)
-        row = _densest_window_row(np.asarray(ys), np.asarray(ls), 50.0)
+        def row_of(cands: Dict[int, List[Band]]) -> Tuple[Optional[float], int]:
+            ys = [b.centroid_y for i in group for b in cands[i]]
+            ls = [i for i in group for _ in cands[i]]
+            return _densest_window(np.asarray(ys), np.asarray(ls), 50.0)
+
+        cands = {i: [b for b in lane_bands[i] if b.centroid_y >= well_zone] for i in group}
+        row, n_lanes = row_of(cands)
+        if well_zone > 0 and n_lanes < max(2, len(group) / 2):
+            cands = {i: lane_bands[i] for i in group}
+            row, _ = row_of(cands)
         if row is None:
             for i in group:
                 picks[i] = None
@@ -320,7 +338,7 @@ def _fit_controls(
         pred_fn = lambda m, v=row: v  # noqa: E731
         for _ in range(2):  # pick -> refit -> re-pick
             for i in group:
-                near = [b for b in lane_bands[i] if abs(b.centroid_y - pred_fn(lane_mixes[i])) <= 14.0]
+                near = [b for b in cands[i] if abs(b.centroid_y - pred_fn(lane_mixes[i])) <= 14.0]
                 picks[i] = max(near, key=lambda b: b.area) if near else None
             got = [(lane_mixes[i], picks[i].centroid_y) for i in group if picks[i]]
             if len(got) >= 8:
@@ -384,7 +402,9 @@ def analyse_gel(
 
     warnings: List[str] = []
     known_panels: Optional[List[Tuple[int, int]]] = None
+    well_zone = 0.0
     if lane_map is not None:
+        well_zone = lane_map.well_zone
         if len(lane_map.slots) != len(mixes):
             raise ValueError(
                 f"lane layout has {len(lane_map.slots)} lanes but the tray has "
@@ -401,7 +421,8 @@ def analyse_gel(
         centers = _cluster_centers(lane_bands)
 
     picks, slope_auto, panels, calibrated = _fit_controls(
-        lane_bands, mixes, [ctrl_bps_all[m] for m in mixes], centers, known_panels)
+        lane_bands, mixes, [ctrl_bps_all[m] for m in mixes], centers, known_panels,
+        well_zone)
     slope = float(slope_b) if slope_b is not None else slope_auto
     panels_mix = [(mixes[p0], mixes[p1]) for p0, p1 in panels]
 

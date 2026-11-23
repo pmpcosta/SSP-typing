@@ -280,6 +280,42 @@ def test_lane_map_ignores_bands_between_strips_with_warning():
     assert any("outside every lane slot" in w for w in ga.warnings)
 
 
+def test_well_marks_in_every_lane_do_not_outvote_the_control_row():
+    # Gel_05: faint marks under the wells are segmented in every lane; the
+    # control row misses one lane, so by count alone the marks would win and
+    # every band would be sized against them
+    lm = _two_panel_map()
+    bands = [_band(c, 30, area=150) for c in lm.centers]                 # well marks
+    bands += [_band(c, 300, area=300) for i, c in enumerate(lm.centers) if i != 2]
+    bands += [_band(lm.centers[1], 240, area=300)]                       # a product
+    lm.well_zone = 0.0
+    assert analyse_gel(bands, _tray(8), lane_map=lm).lanes[0].control_y == 30
+    lm.well_zone = 100.0
+    ga = analyse_gel(bands, _tray(8), lane_map=lm)
+    assert [l.control_y for l in ga.lanes] == [300, 300, None, 300, 300, 300, 300, 300]
+    kinds = [(c.kind, c.band.centroid_y) for c in ga.lanes[1].calls]
+    assert kinds[0][0] == "hmw" and ("control", 300) in kinds
+
+
+def test_well_zone_falls_back_when_controls_sit_inside_it():
+    # a very short run: the only band row is inside the zone; it is still used
+    lm = _two_panel_map()
+    lm.well_zone = 100.0
+    bands = [_band(c, 60, area=300) for c in lm.centers]
+    ga = analyse_gel(bands, _tray(8), lane_map=lm)
+    assert all(l.valid and l.control_y == 60 for l in ga.lanes)
+
+
+def test_manifest_lane_map_sets_well_zone():
+    from ssp.layout import WELL_ZONE_PITCHES, LaneSlot, Manifest, Strip
+    man = Manifest(image_size=(200, 100),
+                   strips=[Strip(block=0, row=0, x0=0, x1=160, height=100,
+                                 first_mix=1, last_mix=4)],
+                   lanes=[LaneSlot(mix=i + 1, block=0, row=0, x0=40.0 * i, x1=40.0 * (i + 1))
+                          for i in range(4)])
+    assert man.to_lane_map().well_zone == pytest.approx(WELL_ZONE_PITCHES * 40)
+
+
 def test_lane_map_lane_count_must_match_tray():
     with pytest.raises(ValueError, match="8 lanes but the tray has 6"):
         analyse_gel([], _tray(6), lane_map=_two_panel_map())
