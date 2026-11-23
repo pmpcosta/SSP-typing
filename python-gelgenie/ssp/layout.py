@@ -62,6 +62,10 @@ PRESETS: Dict[str, Tuple[int, int, int]] = {
 }
 PRESTITCHED_ASPECT = 3.0  # width / height above which an image is treated as joined
 DEFAULT_GAP_PITCHES = 2.0
+# each strip starts at its cut, just above the wells; bands this many lane
+# pitches below the cut are well marks / loading smudges, not controls
+# (Gel_05: smudges <= 1.8 pitches down, controls >= 3.8; G_26160: >= 5.1)
+WELL_ZONE_PITCHES = 2.5
 
 Point = Tuple[float, float]
 
@@ -373,8 +377,10 @@ class Manifest:
 
         if self.stitched_input or not self.lanes:
             return None
+        pitch = float(np.median([ln.x1 - ln.x0 for ln in self.lanes]))
         return LaneMap(slots=[(ln.x0, ln.x1) for ln in self.lanes],
-                       panels=[(s.first_mix - 1, s.last_mix - 1) for s in self.strips])
+                       panels=[(s.first_mix - 1, s.last_mix - 1) for s in self.strips],
+                       well_zone=WELL_ZONE_PITCHES * pitch)
 
     @classmethod
     def from_dict(cls, d: Dict) -> "Manifest":
