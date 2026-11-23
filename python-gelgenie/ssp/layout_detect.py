@@ -59,6 +59,7 @@ from scipy.ndimage import gaussian_filter1d, grey_closing, uniform_filter1d
 from scipy.signal import find_peaks
 
 from ssp.layout import PRESETS, Block, Layout, LayoutError, Row
+from ssp.preprocessing import has_light_background
 
 
 @dataclass
@@ -77,7 +78,7 @@ def _gray01(image: np.ndarray) -> np.ndarray:
 
 def _bands_bright(g: np.ndarray) -> np.ndarray:
     """Flip light-background gels so bands are bright."""
-    return g if np.median(g) < 0.5 else 1.0 - g
+    return 1.0 - g if has_light_background(g) else g
 
 
 def _band_signal(g: np.ndarray, scale: float) -> np.ndarray:

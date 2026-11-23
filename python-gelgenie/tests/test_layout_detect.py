@@ -342,3 +342,17 @@ def test_g26160_detected_layout_types_like_hand_stitched(tmp_path):
     assert a['typing'] == b['typing']
     for k in ('positive_lanes', 'invalid_lanes', 'panels', 'warnings'):
         assert a['analysis'][k] == b['analysis'][k], k
+
+
+@pytest.mark.skipif(not present, reason="private real gel photos not available")
+@pytest.mark.parametrize("name", present)
+def test_real_gel_polarity_is_detected(name):
+    """G_26160 is a UV photo (bright bands on dark); the others are negative
+    exports. Judged both on the raw photo and on the joined strip."""
+    from ssp.cli import detect_invert
+    from ssp.layout import stitch
+    raw = np.asarray(imageio.imread(PRE / f"{name}_before.jpg"))
+    strip, _ = stitch(raw, Layout.load_json(str(PRE / f"{name}.layout.json")))
+    expected = name != "G_26160"
+    assert detect_invert(raw) is expected
+    assert detect_invert(strip) is expected

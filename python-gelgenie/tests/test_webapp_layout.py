@@ -217,11 +217,20 @@ def test_relayout_restages_original_with_its_layout(client):
     d = r.json()
     assert d["layout"]["blocks"] == layout.to_dict()["blocks"]
     assert d["tray_store_name"] == "tray"
-    # the re-cut session must be segmented like its source
-    assert d["params"] == {"min_area": 7, "invert": False, "percentile_norm": True}
+    # the re-cut session must be segmented like its source; a detected
+    # polarity is detected again on the new cut, not pinned
+    assert d["params"] == {"min_area": 7, "percentile_norm": True}
     img = imageio.imread(BytesIO(client.get(f"/api/uploads/{d['upload_id']}/image").content))
     gel, _ = _typing_gel()
     np.testing.assert_array_equal(img, gel)
+
+
+def test_relayout_keeps_a_forced_polarity(client):
+    info, layout = _typing_upload(client)
+    s = _create(client, info["upload_id"], layout, invert="false").json()
+    assert s["params"]["invert_auto"] is False
+    d = client.post(f"/api/sessions/{s['id']}/relayout").json()
+    assert d["params"]["invert"] is False
 
 
 def test_relayout_needs_a_raw_photo_session(client):

@@ -29,6 +29,8 @@ normalized images are not quantized to 8-bit.
   (RGB channel averaging, then either datatype-max or 0.1/99.9 percentile
   normalization to [0, 1]).
 * ``invert`` mirrors ``ImageInvert`` (1 - x).
+* ``has_light_background`` picks the polarity (not in QuPath, where the user
+  ticks invert): GelGenie models expect bright bands on a dark background.
 * ``squish_channels`` mirrors ``ChannelSquisher`` (mean over the channel axis).
 """
 
@@ -90,6 +92,17 @@ def remove_padding(arr: np.ndarray, pads: PadWidth) -> np.ndarray:
 def invert(arr: np.ndarray) -> np.ndarray:
     """Mirror of ``ImageInvert``: return ``1 - arr`` (assumes [0, 1] float)."""
     return 1.0 - arr
+
+
+def has_light_background(gray: np.ndarray) -> bool:
+    """True for a dark-bands-on-light gel, which must be inverted for the model.
+
+    Bands, wells and labels cover a minority of a gel photo, so the median is
+    the background level. Gels photographed under UV/blue light have a dark
+    background (G_26160: median 0.20); inverted prints and "negative" exports
+    have a light one (Gel_05 / Gel_01: 0.73).
+    """
+    return float(np.median(gray)) >= 0.5
 
 
 def squish_channels(arr: np.ndarray) -> np.ndarray:

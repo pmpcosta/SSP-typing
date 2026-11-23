@@ -140,3 +140,14 @@ def test_normalize_percentile_constant_image_gives_zeros():
     arr = np.full((8, 8), 1000, dtype=np.uint16)
     out = pp.normalize_image(arr, data_max_norm=False)
     np.testing.assert_array_equal(out, np.zeros((8, 8), dtype=np.float32))
+
+
+def test_has_light_background_tells_polarity_from_the_background():
+    dark = np.full((50, 80), 0.15, dtype=np.float32)
+    dark[20:25, 10:70] = 0.9          # bright band on a dark gel
+    assert pp.has_light_background(dark) is False
+    assert pp.has_light_background(1.0 - dark) is True
+    # bands covering a large share of the gel do not flip the call
+    busy = np.full((50, 80), 0.2, dtype=np.float32)
+    busy[:20] = 0.95
+    assert pp.has_light_background(busy) is False

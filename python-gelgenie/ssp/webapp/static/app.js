@@ -144,11 +144,10 @@ async function createSession(fields, params = null) {
   else fd.append('tray_name', trayName);
   if (params) {
     if (params.min_area != null) fd.append('min_area', String(params.min_area));
-    if (params.invert) fd.append('invert', 'true');
+    if (params.invert != null) fd.append('invert', String(params.invert));
     if (params.percentile_norm) fd.append('percentile_norm', 'true');
   } else {
     fd.append('min_area', String($('min-area').value || 5));
-    if ($('invert-flag').checked) fd.append('invert', 'true');
   }
   const data = await api('/api/sessions', { method: 'POST', body: fd });
   await setState(data, { refit: true, newSession: true });
@@ -290,8 +289,10 @@ async function setState(data, { refit = false, newSession = false,
   $('relayout-btn').hidden = !data.has_original;
   $('lane-source').textContent = data.lane_assignment === 'layout'
     ? 'lanes from confirmed layout' : '';
+  const polarity = data.params?.invert == null ? ''
+    : data.params.invert ? '  · dark bands on light' : '  · bright bands on dark';
   $('session-info').textContent =
-    `${data.image_name} × ${data.tray_name}  (${data.id})`;
+    `${data.image_name} × ${data.tray_name}  (${data.id})${polarity}`;
   $('dl-typing').href = `/api/sessions/${data.id}/typing.json`;
   $('dl-report').href = `/api/sessions/${data.id}/report.txt`;
 

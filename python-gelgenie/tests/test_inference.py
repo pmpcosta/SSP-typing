@@ -152,3 +152,14 @@ def test_infer_padding_is_removed_from_output():
     assert mask.shape == (101, 53)
     assert mask[50, 25] == 1
     assert mask.sum() == 1
+
+
+def test_segment_detects_a_light_background_and_inverts():
+    model = GelGenieONNX(session=FakeSession())
+    positive = np.zeros((64, 64), dtype=np.uint8)
+    positive[10:20, 10:20] = 255
+    negative = 255 - positive          # the same gel, dark band on light
+    np.testing.assert_array_equal(model.segment(negative), model.segment(positive))
+    # an explicit choice still wins over detection
+    forced = model.segment(negative, invert=False)
+    assert forced[15, 15] == 0 and forced[0, 0] == 1

@@ -133,7 +133,7 @@ def create_app(config: AppConfig) -> FastAPI:
         tray: Optional[UploadFile] = File(None),
         tray_name: Optional[str] = Form(None),
         min_area: Optional[int] = Form(None),
-        invert: bool = Form(False),
+        invert: Optional[bool] = Form(None),  # None: detect the polarity
         percentile_norm: bool = Form(False),
     ):
         if tray is None and not tray_name:
