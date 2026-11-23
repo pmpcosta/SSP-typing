@@ -342,3 +342,40 @@ def test_assign_to_slots_edges_and_tolerance():
     assert [b.centroid_x for b in lane_bands[1]] == [50.0, 124.0]
     assert lane_bands[2] == []
     assert [b.centroid_x for b in outside] == [126.0, 160.0]
+
+
+def test_bigger_control_row_must_sit_above_the_smaller_one():
+    # G_26160 panel 3: lanes 65-70 have a 256 bp control, 71-96 an 800 bp one.
+    # In the 800 bp lanes the real control row ties with the dimer front, and
+    # one product next to the front tips the count; but an 800 bp control
+    # cannot run below the panel's 256 bp controls
+    bands = []
+    xs = [20 + i * 50 for i in range(12)]
+    for i, x in enumerate(xs):
+        if i < 4:
+            bands.append(_band(x, 340, area=400))       # 256 bp controls
+        elif i != 5:
+            bands.append(_band(x, 250, area=400))       # 800 bp controls
+        if i != 9:
+            bands.append(_band(x, 410, area=300))       # dimer / front
+    bands.append(_band(xs[6], 380, area=300))           # a product near the front
+    tray = Tray(name='t', lanes=[
+        TrayLane(mix=i + 1, locus='B' if i < 4 else 'C', product_bp=[500],
+                 control_bp=256 if i < 4 else 800, serotypes='', specificities='')
+        for i in range(12)])
+    ga = analyse_gel(bands, tray)
+    assert [l.control_y for l in ga.lanes] == [340] * 4 + [250, None] + [250] * 6
+    assert ga.slope_b == pytest.approx(90 / math.log(800 / 256), rel=0.01)
+
+
+def test_control_picks_follow_a_curved_row_to_the_panel_ends():
+    # G_26160 panel 1: the control row curves down ~50 px across 32 lanes; the
+    # first fit sees only the middle lanes and misses the last ones
+    # (the session's control heights; lane 27 had no bands)
+    ys = [370, 370, 370, 370, 371, 372, 373, 374, 376, 377, 379, 381, 383, 384,
+          387, 389, 393, 396, 398, 400, 403, 405, 407, 410, 413, 415, None, 417,
+          419, 420, 422, 423]
+    lm = LaneMap(slots=[(i * 50, i * 50 + 40) for i in range(32)], panels=[(0, 31)])
+    bands = [_band(20 + i * 50, y, area=400) for i, y in enumerate(ys) if y]
+    ga = analyse_gel(bands, _tray(32), lane_map=lm)
+    assert [l.control_y for l in ga.lanes] == ys

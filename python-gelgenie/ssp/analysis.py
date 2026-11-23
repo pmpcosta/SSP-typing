@@ -48,6 +48,7 @@ strip is its own panel, so neither empty lanes nor seams need guessing.
 
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple, Union
@@ -254,22 +255,51 @@ class GelAnalysis:
         }
 
 
-def _densest_window_row(ys: np.ndarray, lanes: np.ndarray, width: float,
-                        min_lanes: float = 0) -> Optional[float]:
-    """Median y of the densest window; ties prefer more distinct lanes.
-    Only windows with bands from at least ``min_lanes`` lanes compete."""
-    if len(ys) == 0:
-        return None
-    order = np.argsort(ys)
-    ys_s, lanes_s = ys[order], lanes[order]
-    best = (0, 0, None)
-    for i in range(len(ys_s)):
-        j = np.searchsorted(ys_s, ys_s[i] + width, side="left")
-        count = j - i
-        distinct = len(set(lanes_s[i:j].tolist()))
-        if distinct >= min_lanes and (count, distinct) > (best[0], best[1]):
-            best = (count, distinct, float(np.median(ys_s[i:j])))
-    return best[2]
+def _window_rows(ys: np.ndarray, lanes: np.ndarray, width: float,
+                 min_lanes: float = 0, k: int = 3) -> List[float]:
+    """Up to ``k`` candidate rows, best first: the median y of the densest
+    y-window (ties prefer more distinct lanes), then the densest window of
+    the bands left, and so on. Only windows with bands from at least
+    ``min_lanes`` lanes count."""
+    ys, lanes = np.asarray(ys, dtype=float), np.asarray(lanes)
+    rows: List[float] = []
+    while len(ys) and len(rows) < k:
+        order = np.argsort(ys)
+        ys_s, lanes_s = ys[order], lanes[order]
+        best = (0, 0, None, None)
+        for i in range(len(ys_s)):
+            j = np.searchsorted(ys_s, ys_s[i] + width, side="left")
+            count = j - i
+            distinct = len(set(lanes_s[i:j].tolist()))
+            if distinct >= min_lanes and (count, distinct) > (best[0], best[1]):
+                best = (count, distinct, float(np.median(ys_s[i:j])), (ys_s[i], ys_s[j - 1]))
+        if best[2] is None:
+            break
+        rows.append(best[2])
+        lo, hi = best[3]
+        keep = (ys < lo) | (ys > hi)
+        ys, lanes = ys[keep], lanes[keep]
+    return rows
+
+
+def _ordered_rows(cands: List[Tuple[int, List[float]]]) -> List[Optional[float]]:
+    """One row per control size of a panel, from each size's ranked
+    candidates: bigger products run less far, so a bigger control must sit
+    higher (smaller y). Picks the ordered combination with the best ranks
+    (G_26160: the 800 bp C controls tie with the dimer front, which lies below
+    the panel's 256 bp controls). Falls back to each size's best row."""
+    best_each = [c[0] if c else None for _, c in cands]
+    if len(cands) < 2 or any(not c for _, c in cands):
+        return best_each
+    best = None
+    for combo in itertools.product(*[range(len(c)) for _, c in cands]):
+        ys = [c[r] for (_, c), r in zip(cands, combo)]
+        # cands are sorted by bp ascending, so y must strictly decrease
+        if all(a > b for a, b in zip(ys, ys[1:])):
+            key = (sum(combo), combo)
+            if best is None or key < best[0]:
+                best = (key, ys)
+    return best[1] if best else best_each
 
 
 def _panel_ranges(centers: Sequence[float]) -> List[Tuple[int, int]]:
@@ -315,31 +345,52 @@ def _fit_controls(
         for bp, group in sorted(by_bp.items()):
             groups.append((bp, group))
 
+    # rough control rows: ranked densest y-windows per group
+    group_cands: List[Dict[int, List[Band]]] = []
+    group_rows: List[List[float]] = []
     for bp, group in groups:
-        # rough control row: densest y-window over the group's bands
-        def row_of(cands: Dict[int, List[Band]], min_lanes: float = 0) -> Optional[float]:
+        def rows_of(cands: Dict[int, List[Band]], min_lanes: float = 0) -> List[float]:
             ys = [b.centroid_y for i in group for b in cands[i]]
             ls = [i for i in group for _ in cands[i]]
-            return _densest_window_row(np.asarray(ys), np.asarray(ls), 50.0, min_lanes)
+            return _window_rows(np.asarray(ys), np.asarray(ls), 50.0, min_lanes)
 
         cands = {i: lane_bands[i] for i in group}
-        row = row_of(cands)
+        rows = rows_of(cands)
         if well_zone > 0:
-            # densest below-zone row among those spanning enough lanes (one
+            # densest below-zone rows among those spanning enough lanes (one
             # lane's cluster of bands must not trigger the fallback)
             below = {i: [b for b in lane_bands[i] if b.centroid_y >= well_zone] for i in group}
-            row_below = row_of(below, min_lanes=max(2, len(group) / 2))
-            if row_below is not None:
-                cands, row = below, row_below
+            rows_below = rows_of(below, min_lanes=max(2, len(group) / 2))
+            if rows_below:
+                cands, rows = below, rows_below
+        group_cands.append(cands)
+        group_rows.append(rows)
+
+    # within a panel, control rows must be ordered by size
+    chosen: List[Optional[float]] = [None] * len(groups)
+    for p0, p1 in panels:
+        gi = [g for g, (_, group) in enumerate(groups) if p0 <= group[0] <= p1]
+        for g, row in zip(gi, _ordered_rows([(groups[g][0], group_rows[g]) for g in gi])):
+            chosen[g] = row
+
+    for (bp, group), cands, row in zip(groups, group_cands, chosen):
         if row is None:
             for i in group:
                 picks[i] = None
             continue
         pred_fn = lambda m, v=row: v  # noqa: E731
-        for _ in range(2):  # pick -> refit -> re-pick
+        # pick -> refit -> re-pick until the picks settle: on a curved gel
+        # the first fit only sees the middle lanes, and its extrapolation can
+        # miss the end lanes that a refit over more picks reaches (G_26160)
+        prev = None
+        for _ in range(6):
             for i in group:
                 near = [b for b in cands[i] if abs(b.centroid_y - pred_fn(lane_mixes[i])) <= 14.0]
                 picks[i] = max(near, key=lambda b: b.area) if near else None
+            now = [id(picks[i]) for i in group]
+            if now == prev:
+                break
+            prev = now
             got = [(lane_mixes[i], picks[i].centroid_y) for i in group if picks[i]]
             if len(got) >= 8:
                 coef = np.polyfit([g[0] for g in got], [g[1] for g in got], 2)
