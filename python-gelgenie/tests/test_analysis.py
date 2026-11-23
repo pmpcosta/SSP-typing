@@ -379,3 +379,16 @@ def test_control_picks_follow_a_curved_row_to_the_panel_ends():
     bands = [_band(20 + i * 50, y, area=400) for i, y in enumerate(ys) if y]
     ga = analyse_gel(bands, _tray(32), lane_map=lm)
     assert [l.control_y for l in ga.lanes] == ys
+
+
+def test_control_sizes_on_one_row_fall_back_to_the_default_slope():
+    # both control sizes of a panel settle on y=290: the estimate would be a
+    # zero slope, and sizing any other band would divide by it
+    bands = [_band(20 + i * 50, 290, area=400) for i in range(8)] + [_band(20, 250)]
+    tray = Tray(name='t', lanes=[
+        TrayLane(mix=i + 1, locus='B' if i < 4 else 'C', product_bp=[500],
+                 control_bp=256 if i < 4 else 800, serotypes='', specificities='')
+        for i in range(8)])
+    ga = analyse_gel(bands, tray)
+    assert ga.slope_b == DEFAULT_BP_SLOPE
+    assert any('calibrat' in w for w in ga.warnings)

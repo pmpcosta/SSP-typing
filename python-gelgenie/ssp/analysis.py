@@ -409,7 +409,11 @@ def _fit_controls(
         usable = sorted((bp, float(np.median(ys))) for bp, ys in by_bp.items() if len(ys) >= 3)
         for (bp_lo, y_lo), (bp_hi, y_hi) in zip(usable, usable[1:]):
             if bp_hi > bp_lo:
-                slope_estimates.append((y_lo - y_hi) / (math.log(bp_hi) - math.log(bp_lo)))
+                slope = (y_lo - y_hi) / (math.log(bp_hi) - math.log(bp_lo))
+                # a bigger control at or below a smaller one is a mispick: a
+                # zero slope cannot size bands, a negative one sizes them backwards
+                if slope > 0:
+                    slope_estimates.append(slope)
     slope_b = float(np.mean(slope_estimates)) if slope_estimates else DEFAULT_BP_SLOPE
     return picks, slope_b, panels, bool(slope_estimates)
 
