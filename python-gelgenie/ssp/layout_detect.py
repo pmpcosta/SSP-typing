@@ -18,7 +18,7 @@ Automatic first guess of a gel :class:`~ssp.layout.Layout` from a raw photo.
 The result is a *suggestion* for the user to confirm on the overlay, never a
 silent decision. Classical image analysis only (no model):
 
-1. Normalise polarity so bands are bright, then keep thin horizontal
+1. Normalise polarity so bands are bright (judged as for segmentation), then keep thin horizontal
    structure (``band``: signal minus its local vertical mean).
 2. 6x16: split the photo at the strongest vertical seam in its middle third.
 3. Per gel piece, the control-band lines are the strongest peaks of the row
@@ -59,7 +59,7 @@ from scipy.ndimage import gaussian_filter1d, grey_closing, uniform_filter1d
 from scipy.signal import find_peaks
 
 from ssp.layout import PRESETS, Block, Layout, LayoutError, Row
-from ssp.preprocessing import has_light_background
+from ssp.preprocessing import detect_invert
 
 
 @dataclass
@@ -76,9 +76,13 @@ def _gray01(image: np.ndarray) -> np.ndarray:
     return np.clip((arr - lo) / (hi - lo), 0, 1) if hi > lo else np.zeros_like(arr)
 
 
-def _bands_bright(g: np.ndarray) -> np.ndarray:
-    """Flip light-background gels so bands are bright."""
-    return 1.0 - g if has_light_background(g) else g
+def _bands_bright(g: np.ndarray, image: np.ndarray) -> np.ndarray:
+    """Flip the stretched ``g`` of a light-background gel so bands are bright.
+
+    The polarity is judged on ``image`` as the model sees it, not on ``g``:
+    the percentile stretch moves the median, and layout and segmentation must
+    agree. The stretch is monotone, so flipping ``g`` is still right."""
+    return 1.0 - g if detect_invert(image) else g
 
 
 def _band_signal(g: np.ndarray, scale: float) -> np.ndarray:
@@ -465,7 +469,7 @@ def detect_layout(image: np.ndarray, preset: str) -> Detection:
     n_blocks, n_rows, n_lanes = PRESETS[preset]
     g = _gray01(image)
     H, W = g.shape
-    gb = _bands_bright(g)
+    gb = _bands_bright(g, image)
     warnings: List[str] = []
     if n_blocks == 1:
         spans = [(0, W)]

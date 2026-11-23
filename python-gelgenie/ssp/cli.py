@@ -105,21 +105,8 @@ def segment_image(
     return mask, bands
 
 
-def detect_invert(raw: np.ndarray, data_max_norm: bool = True,
-                  dtype_max: float = 255.0) -> bool:
-    """Whether ``raw`` is a dark-bands-on-light gel that needs inverting,
-    judged on the image exactly as the model will be fed it."""
-    gray = preprocessing.normalize_image(raw, data_max_norm=data_max_norm,
-                                         dtype_max=dtype_max)
-    return preprocessing.has_light_background(gray)
-
-
-def _infer_dtype_max(raw: np.ndarray) -> float:
-    if raw.dtype == np.uint16:
-        return 65535.0
-    if np.issubdtype(raw.dtype, np.floating):
-        return 1.0  # QuPath pixel types report 1.0 as the float upper bound
-    return 255.0
+detect_invert = preprocessing.detect_invert
+_infer_dtype_max = preprocessing.infer_dtype_max
 
 
 def _resolve_model(explicit: Optional[str]):

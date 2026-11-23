@@ -36,7 +36,7 @@ normalized images are not quantized to 8-bit.
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -103,6 +103,26 @@ def has_light_background(gray: np.ndarray) -> bool:
     have a light one (Gel_05 / Gel_01: 0.73).
     """
     return float(np.median(gray)) >= 0.5
+
+
+def infer_dtype_max(raw: np.ndarray) -> float:
+    """Datatype upper bound used for ``data_max_norm`` normalization."""
+    if raw.dtype == np.uint16:
+        return 65535.0
+    if np.issubdtype(raw.dtype, np.floating):
+        return 1.0  # QuPath pixel types report 1.0 as the float upper bound
+    return 255.0
+
+
+def detect_invert(raw: np.ndarray, data_max_norm: bool = True,
+                  dtype_max: Optional[float] = None) -> bool:
+    """Whether ``raw`` is a dark-bands-on-light gel that needs inverting,
+    judged on the image exactly as the model will be fed it (the default
+    ``dtype_max`` is the one inferred from ``raw``'s dtype)."""
+    raw = np.asarray(raw)
+    gray = normalize_image(raw, data_max_norm=data_max_norm,
+                           dtype_max=infer_dtype_max(raw) if dtype_max is None else dtype_max)
+    return has_light_background(gray)
 
 
 def squish_channels(arr: np.ndarray) -> np.ndarray:
