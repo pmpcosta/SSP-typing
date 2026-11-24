@@ -194,3 +194,21 @@ a.dl:hover { border-color: var(--accent); }
 #lay-preview-wrap { overflow-x: auto; background: #000; }
 #lay-preview { display: block; height: 180px; max-width: none; }
 .muted { color: var(--muted); }
+
+/* right-click band menu */
+#band-menu {
+  position: fixed; z-index: 50; min-width: 14em;
+  display: flex; flex-direction: column;
+  background: var(--panel2); border: 1px solid #000; border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5); padding: 4px 0;
+}
+#band-menu[hidden] { display: none; }
+#band-menu .menu-head { color: var(--muted); font-size: 0.85em; padding: 4px 12px 6px; }
+#band-menu button {
+  border: 0; border-radius: 0; background: none; text-align: left;
+  padding: 5px 12px; color: var(--text);
+}
+#band-menu button:hover, #band-menu button:focus { background: var(--panel); outline: none; }
+#band-menu button.checked { color: var(--accent); }
+#band-menu button.sep { border-top: 1px solid #000; margin-top: 4px; padding-top: 7px; }
+#band-menu button.danger { color: #ff6b5e; }

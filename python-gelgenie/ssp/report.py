@@ -48,7 +48,8 @@ def build_report(image_name: str, tray_name: str,
                 continue
             bp = f"{c.bp_est:.0f}bp" if c.bp_est is not None else "?bp"
             extra = f"~{c.matched_bp}" if c.matched_bp else ""
-            bits.append(f"{c.band.centroid_y:.0f}px={bp}{extra} [{c.kind}]")
+            kind = f"{c.kind}, set by hand" if c.manual else c.kind
+            bits.append(f"{c.band.centroid_y:.0f}px={bp}{extra} [{kind}]")
         lines.append(f"  mix {lane.mix:3d}: {'; '.join(bits)}")
     for w in ga.warnings:
         lines.append(f"WARNING: {w}")

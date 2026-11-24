@@ -3,6 +3,7 @@
  * straight to typing, a raw gel photo goes through the layout step
  * (layout.js) and the session is created from the confirmed layout.
  * Interactions: click band = delete/restore, shift+click = add band,
+ * right-click band = set its kind by hand (product, control, ...),
  * click lane header = cycle force positive/negative/auto,
  * match-tol slider re-types live. All edits round-trip through
  * POST /api/sessions/{sid}/edits which recomputes everything server-side.
@@ -18,6 +19,19 @@ const KIND_COLORS = {
   unexplained: { stroke: '#f39c12', fill: 'rgba(243,156,18,0.20)' },
   unclassified:{ stroke: '#8a93a5', fill: 'rgba(138,147,165,0.12)' },
 };
+// kinds the user can give a band (right-click menu), in menu order
+const MANUAL_KINDS = [
+  ['product', 'Product (lane positive)'],
+  ['control', 'Control'],
+  ['dimer', 'Primer dimer / front'],
+  ['hmw', 'High-MW artifact'],
+  ['unexplained', 'Unexplained'],
+];
+const KIND_LABELS = { product: 'product', control: 'control', dimer: 'dimer',
+                      hmw: 'HMW artifact', unexplained: 'unexplained',
+                      unclassified: 'unclassified' };
+const emptyEdits = () => ({ lane_overrides: [], deleted_bands: [], added_bands: [],
+                            band_kinds: [] });
 
 const state = {
   sid: null, data: null, edits: null, img: null, maskCanvas: null,
@@ -113,6 +127,12 @@ function bindUI() {
 
   const canvas = $('gel-canvas');
   canvas.addEventListener('click', onCanvasClick);
+  canvas.addEventListener('contextmenu', onCanvasMenu);
+  document.addEventListener('mousedown', (ev) => {
+    if (!$('band-menu').contains(ev.target)) closeBandMenu();
+  });
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeBandMenu(); });
+  $('gel-container').addEventListener('scroll', closeBandMenu);
   canvas.addEventListener('wheel', (ev) => {
     if (!ev.ctrlKey) return;
     ev.preventDefault();
@@ -253,6 +273,7 @@ async function uploadTray(ev) {
 async function setState(data, { refit = false, newSession = false,
                                 adoptEdits = true } = {}) {
   if (newSession || data.id !== state.sid) {
+    closeBandMenu();   // its callbacks hold the previous session's band
     state.sid = data.id;
     state.img = null;
     state.maskCanvas = null;
@@ -333,7 +354,9 @@ let pushQueued = false;
 
 function currentEdits() {
   // client-authoritative edit set; the server copy may lag during rapid edits
-  return state.edits || { lane_overrides: [], deleted_bands: [], added_bands: [] };
+  if (!state.edits) state.edits = emptyEdits();
+  state.edits.band_kinds = state.edits.band_kinds || [];  // sessions from before
+  return state.edits;
 }
 
 // One POST in flight at a time; interactions during a push mark the queue and
@@ -373,7 +396,7 @@ async function resetEdits() {
   $('match-tol').value = String(tol);
   $('match-tol-val').textContent = Number(tol).toFixed(2);
   tolTouched = true;   // restore the server default explicitly
-  state.edits = { lane_overrides: [], deleted_bands: [], added_bands: [] };
+  state.edits = emptyEdits();
   await queuePush();
 }
 
@@ -515,8 +538,14 @@ function drawBand(ctx, bd, s, isDeleted) {
   ctx.fillRect(px, py, pw, ph);
   ctx.strokeStyle = col.stroke;
   if (bd.synthetic) ctx.setLineDash([3, 2]);
+  if (bd.manual) ctx.lineWidth = 2.5;   // kind set by hand
   ctx.strokeRect(px, py, pw, ph);
+  ctx.lineWidth = 1;
   ctx.setLineDash([]);
+  if (bd.manual) {                       // and a corner tick to tell it apart
+    ctx.fillStyle = col.stroke;
+    ctx.fillRect(px + pw - 2, py - 3, 5, 5);
+  }
 }
 
 function onCanvasClick(ev) {
@@ -540,37 +569,16 @@ function onCanvasClick(ev) {
     queuePush();
     return;
   }
-  // hit-test bands of the lane under the cursor only: at fit-zoom the 3-px
-  // pad reaches ~35 image px (wider than a lane), so without the lane
-  // restriction a click can grab the neighboring lane's band. Real bands
-  // first (synthetic area=1 would otherwise sort first and shadow them).
   const lb = state.laneBounds.find((bb) => ix >= bb.left && ix < bb.right);
-  const hits = [];
-  for (const lane of state.data.analysis.lanes) {
-    if (lb && lane.mix !== lb.mix) continue;
-    for (const bd of lane.bands || []) {
-      const [y0, x0, y1, x1] = bd.bbox;
-      const pad = 3 / s;
-      if (ix >= x0 - pad && ix <= x1 + pad && iy >= y0 - pad && iy <= y1 + pad) {
-        hits.push(bd);
-      }
-    }
-  }
-  if (hits.length) {
-    hits.sort((a, b) => ((a.synthetic ? 1 : 0) - (b.synthetic ? 1 : 0))
-                        || (a.area - b.area));
-    const hit = hits[0];
+  const found = bandAt(ix, iy);
+  if (found) {
+    const hit = found.band;
     const edits = currentEdits();
     if (hit.synthetic) {
-      // remove a user-added band by matching its stored position
-      const i = edits.added_bands.findIndex((ab) =>
-        Math.abs(ab.x - hit.centroid_x) < 0.51 &&
-        Math.abs(ab.y - hit.centroid_y) < 0.51);
+      const i = addedIndex(hit);
       if (i !== -1) edits.added_bands.splice(i, 1);
       else return;
-    } else if (!edits.deleted_bands.includes(hit.id)) {
-      edits.deleted_bands.push(hit.id);
-    } else {
+    } else if (!deleteBand(hit.id)) {
       return;   // already deleted client-side; don't double-push
     }
     queuePush();
@@ -595,6 +603,135 @@ function onCanvasClick(ev) {
       return;
     }
   }
+}
+
+// the analysed band under image point (ix, iy), with its lane; hit-tests the
+// lane under the cursor only: at fit-zoom the 3-px pad reaches ~35 image px
+// (wider than a lane), so without the lane restriction a click can grab the
+// neighboring lane's band. Real bands first (synthetic area=1 would
+// otherwise sort first and shadow them).
+function bandAt(ix, iy) {
+  const s = state.scale;
+  const lb = state.laneBounds.find((bb) => ix >= bb.left && ix < bb.right);
+  const hits = [];
+  for (const lane of state.data.analysis.lanes) {
+    if (lb && lane.mix !== lb.mix) continue;
+    for (const bd of lane.bands || []) {
+      const [y0, x0, y1, x1] = bd.bbox;
+      const pad = 3 / s;
+      if (ix >= x0 - pad && ix <= x1 + pad && iy >= y0 - pad && iy <= y1 + pad) {
+        hits.push({ band: bd, lane });
+      }
+    }
+  }
+  if (!hits.length) return null;
+  hits.sort((a, b) => ((a.band.synthetic ? 1 : 0) - (b.band.synthetic ? 1 : 0))
+                      || (a.band.area - b.band.area));
+  return hits[0];
+}
+
+// index of a user-added band in edits.added_bands: its stored position
+// comes back unchanged as the band's centroid, so match it exactly (a
+// tolerance could pick a neighbouring added band)
+function addedIndex(bd) {
+  return currentEdits().added_bands.findIndex((ab) =>
+    ab.x === bd.centroid_x && ab.y === bd.centroid_y);
+}
+
+// delete a detected band; it forgets any kind set by hand, so a restored
+// band starts automatic (a hidden "control" could otherwise come back
+// next to the lane's newer one)
+function deleteBand(id) {
+  const edits = currentEdits();
+  if (edits.deleted_bands.includes(id)) return false;
+  edits.deleted_bands.push(id);
+  edits.band_kinds = edits.band_kinds.filter((k) => k.id !== id);
+  return true;
+}
+
+// set (or with kind=null clear) the user's kind for a band; one control per
+// lane, so marking a control unmarks the lane's other marked controls
+function setBandKind(bd, lane, kind) {
+  const edits = currentEdits();
+  if (kind === 'control') {
+    for (const other of lane.bands || []) {
+      if (other === bd) continue;
+      if (other.synthetic) {
+        const j = addedIndex(other);
+        if (j !== -1 && edits.added_bands[j].kind === 'control') delete edits.added_bands[j].kind;
+      } else {
+        edits.band_kinds = edits.band_kinds.filter(
+          (k) => !(k.id === other.id && k.kind === 'control'));
+      }
+    }
+  }
+  if (bd.synthetic) {
+    const i = addedIndex(bd);
+    if (i === -1) return;
+    if (kind) edits.added_bands[i].kind = kind;
+    else delete edits.added_bands[i].kind;
+  } else {
+    edits.band_kinds = edits.band_kinds.filter((k) => k.id !== bd.id);
+    if (kind) edits.band_kinds.push({ id: bd.id, kind });
+  }
+  queuePush();
+}
+
+function onCanvasMenu(ev) {
+  if (!state.data) return;
+  const rect = ev.target.getBoundingClientRect();
+  const s = state.scale;
+  const ix = (ev.clientX - rect.left) / s, iy = (ev.clientY - rect.top - HEADER_H) / s;
+  const found = iy >= 0 ? bandAt(ix, iy) : null;
+  if (!found) { closeBandMenu(); return; }   // not on a band: browser menu
+  ev.preventDefault();
+  openBandMenu(found.band, found.lane, ev.clientX, ev.clientY);
+}
+
+function openBandMenu(bd, lane, cx, cy) {
+  const menu = $('band-menu');
+  const size = bd.bp_est != null ? `~${Math.round(bd.bp_est)} bp` : 'size unknown';
+  const now = `${KIND_LABELS[bd.kind] || bd.kind}${bd.manual ? ', set by hand' : ''}`;
+  menu.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'menu-head';
+  head.textContent = `Lane ${lane.mix} · ${size} · ${now}`;
+  menu.appendChild(head);
+  const item = (label, onPick, { checked = false, cls = '' } = {}) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'menuitem');
+    b.className = cls + (checked ? ' checked' : '');
+    b.textContent = (checked ? '✓ ' : '') + label;
+    b.addEventListener('click', () => { closeBandMenu(); onPick(); });
+    menu.appendChild(b);
+  };
+  for (const [kind, label] of MANUAL_KINDS) {
+    item(label, () => setBandKind(bd, lane, kind), { checked: bd.manual && bd.kind === kind });
+  }
+  if (bd.manual) item('Automatic (by size)', () => setBandKind(bd, lane, null), { cls: 'sep' });
+  item(bd.synthetic ? 'Remove added band' : 'Delete band', () => {
+    const edits = currentEdits();
+    if (bd.synthetic) {
+      const i = addedIndex(bd);
+      if (i === -1) return;
+      edits.added_bands.splice(i, 1);
+    } else if (!deleteBand(bd.id)) {
+      return;
+    }
+    queuePush();
+  }, { cls: bd.manual ? 'danger' : 'sep danger' });
+  menu.hidden = false;
+  // keep the menu on screen
+  const r = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(4, Math.min(cx, window.innerWidth - r.width - 4))}px`;
+  menu.style.top = `${Math.max(4, Math.min(cy, window.innerHeight - r.height - 4))}px`;
+  menu.querySelector('button').focus();
+}
+
+function closeBandMenu() {
+  const menu = $('band-menu');
+  if (menu) menu.hidden = true;
 }
 
 function cycleOverride(mix) {
@@ -675,9 +812,9 @@ function renderLaneTable() {
     const ov = overrides[tl.mix];
     const ovTxt = ov ? ` <span class="ov">(forced ${ov.positive ? '+' : '−'})</span>` : '';
     const bands = (lane.bands || [])
-      .filter((b) => b.kind !== 'control')
-      .map((b) => `${b.kind}${b.synthetic ? '(added)' : ''} @ ${b.bp_est ?? '?'}bp`
-           + (b.matched_bp ? ` ~${b.matched_bp}` : ''))
+      .filter((b) => b.kind !== 'control' || b.manual)
+      .map((b) => `${b.kind}${b.synthetic ? '(added)' : ''}${b.manual ? ' (set by hand)' : ''}`
+           + ` @ ${b.bp_est ?? '?'}bp` + (b.matched_bp ? ` ~${b.matched_bp}` : ''))
       .join('; ');
     tr.innerHTML = `
       <td>${tl.mix}</td>
