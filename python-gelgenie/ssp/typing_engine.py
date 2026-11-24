@@ -165,7 +165,7 @@ def _shared_name(alleles: Sequence[str]) -> str:
     return ":".join(common)
 
 
-def consensus_pairs(pairs: Sequence[Tuple[str, str]]) -> List[Tuple[str, str]]:
+def consensus_pairs(pairs: Sequence[Tuple[str, str]]) -> List[Tuple[str, ...]]:
     """The best pairs summarised by allele group: pairs are grouped by their
     two first-field groups (C*04 + C*08, C*08 + C*18), and each side of a
     group is named by the fields its alleles share. G_26160 HLA-C: nine
@@ -175,14 +175,17 @@ def consensus_pairs(pairs: Sequence[Tuple[str, str]]) -> List[Tuple[str, str]]:
     Within one group (A*02 + A*02) a pair's sides are interchangeable: an
     allele in every pair of the group takes the left side, so A*02:01 +
     A*02:05 and A*02:05 + A*02:06 give A*02:05 + A*02, not A*02 + A*02;
-    otherwise each pair is put in name order."""
+    otherwise each pair is put in name order.
+
+    When both sides get the same name, only one allele is identified and the
+    summary names it once: (A*02,), not A*02 + A*02 (Gel_01 HLA-A)."""
     groups: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
     for a, b in pairs:
         fa, fb = a.split(":")[0], b.split(":")[0]
         if (fb, b) < (fa, a):
             a, b, fa, fb = b, a, fb, fa
         groups.setdefault((fa, fb), []).append((a, b))
-    out: List[Tuple[str, str]] = []
+    out: List[Tuple[str, ...]] = []
     for (fa, fb), members in groups.items():
         if fa == fb:
             shared = set.intersection(*({a, b} for a, b in members))
@@ -191,7 +194,8 @@ def consensus_pairs(pairs: Sequence[Tuple[str, str]]) -> List[Tuple[str, str]]:
                 members = [(a, b) if a == anchor else (b, a) for a, b in members]
         left = list(dict.fromkeys(a for a, _ in members))
         right = list(dict.fromkeys(b for _, b in members))
-        out.append((_shared_name(left), _shared_name(right)))
+        a, b = _shared_name(left), _shared_name(right)
+        out.append((a,) if a == b else (a, b))
     return out
 
 
@@ -257,7 +261,7 @@ class TypingResult:
                          f"(score {r.score}; positives {r.positives}{inv})")
             if r.best_pairs:
                 lines.append("  summary: " + "  or  ".join(
-                    f"{a} + {b}" for a, b in consensus_pairs(r.best_pairs)))
+                    " + ".join(p) for p in consensus_pairs(r.best_pairs)))
             if r.conflicts:
                 lines.append(f"  no listed pair fits: each best pair conflicts with "
                              f"{r.score} lane(s):")
