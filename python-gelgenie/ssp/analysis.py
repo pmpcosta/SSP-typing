@@ -265,34 +265,66 @@ class GelAnalysis:
         }
 
 
+def _densest_window(ys_s: np.ndarray, lanes_s: np.ndarray, width: float,
+                    min_lanes: float) -> Optional[Tuple[int, int, int, int]]:
+    """(count, distinct lanes, i, j) of the y-sorted bands' densest window
+    ``ys_s[i:j]`` (ties prefer more distinct lanes, then the higher window),
+    or None."""
+    best = None
+    for i in range(len(ys_s)):
+        j = int(np.searchsorted(ys_s, ys_s[i] + width, side="left"))
+        count, distinct = j - i, len(set(lanes_s[i:j].tolist()))
+        if distinct >= min_lanes and (best is None or (count, distinct) > best[:2]):
+            best = (count, distinct, i, j)
+    return best
+
+
 def _window_rows(ys: np.ndarray, lanes: np.ndarray, width: float,
                  min_lanes: float = 0, k: int = 3,
                  heights: Optional[np.ndarray] = None) -> List[Tuple[float, int, float]]:
     """Up to ``k`` candidate rows, best first, as (y, distinct lanes, median
     band height): the median y of the densest y-window (ties prefer more
     distinct lanes), then the densest window of the bands left, and so on.
-    Only windows with bands from at least ``min_lanes`` lanes count."""
+    Only windows with bands from at least ``min_lanes`` lanes count.
+
+    A window holding ~2 bands per lane spans two rows, and its median falls
+    between them, where no lane has a band (Gel_06 lanes 49-64: controls and
+    the dimer front 43 px apart). Such a window is split into its densest
+    half-width rows, and the candidates are then ranked by their own band
+    counts, the higher row first on a tie."""
     ys, lanes = np.asarray(ys, dtype=float), np.asarray(lanes)
     hs = np.zeros(len(ys)) if heights is None else np.asarray(heights, dtype=float)
-    rows: List[Tuple[float, int, float]] = []
-    while len(ys) and len(rows) < k:
+    found: List[Tuple[int, int, float, float]] = []  # (count, distinct, y, height)
+    split = False
+
+    def row(ys_s, hs_s, count, distinct, i, j):
+        return (count, distinct, float(np.median(ys_s[i:j])), float(np.median(hs_s[i:j])))
+
+    while len(ys) and len(found) < k:
         order = np.argsort(ys)
         ys_s, lanes_s, hs_s = ys[order], lanes[order], hs[order]
-        best = (0, 0, None, None, 0.0)
-        for i in range(len(ys_s)):
-            j = np.searchsorted(ys_s, ys_s[i] + width, side="left")
-            count = j - i
-            distinct = len(set(lanes_s[i:j].tolist()))
-            if distinct >= min_lanes and (count, distinct) > (best[0], best[1]):
-                best = (count, distinct, float(np.median(ys_s[i:j])), (ys_s[i], ys_s[j - 1]),
-                        float(np.median(hs_s[i:j])))
-        if best[2] is None:
+        best = _densest_window(ys_s, lanes_s, width, min_lanes)
+        if best is None:
             break
-        rows.append((best[2], best[1], best[4]))
-        lo, hi = best[3]
-        keep = (ys < lo) | (ys > hi)
+        count, distinct, i, j = best
+        if count >= 1.5 * distinct:
+            split = True
+            ws, wl, wh = ys_s[i:j], lanes_s[i:j], hs_s[i:j]
+            while len(ws):
+                sub = _densest_window(ws, wl, width / 2, min_lanes)
+                if sub is None:
+                    break
+                found.append(row(ws, wh, *sub))
+                keep = np.ones(len(ws), dtype=bool)
+                keep[sub[2]:sub[3]] = False
+                ws, wl, wh = ws[keep], wl[keep], wh[keep]
+        else:
+            found.append(row(ys_s, hs_s, count, distinct, i, j))
+        keep = (ys < ys_s[i]) | (ys > ys_s[j - 1])
         ys, lanes, hs = ys[keep], lanes[keep], hs[keep]
-    return rows
+    if split:
+        found.sort(key=lambda r: (-r[0], -r[1], r[2]))
+    return [(y, distinct, h) for _, distinct, y, h in found[:k]]
 
 
 def _dimer_front_last(rows: List[Tuple[float, int, float]], ctrl_bp: int,
