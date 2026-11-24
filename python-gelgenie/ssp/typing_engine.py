@@ -223,14 +223,17 @@ class LocusResult:
             "consensus": [list(p) for p in consensus_pairs(self.best_pairs)],
         }
 
-    def genotype_text(self) -> str:
+    def genotype_text(self, limit: Optional[int] = 6) -> str:
+        """The call as text; beyond ``limit`` pairs (None: no limit) the rest
+        are counted, not listed."""
         if not self.best_pairs:
             return "no call"
         if self.allele_options:
             return " + ".join("/".join(opts) for opts in self.allele_options)
-        shown = "; ".join(f"{a} + {b}" for a, b in self.best_pairs[:6])
-        if len(self.best_pairs) > 6:
-            shown += f"; ... (+{len(self.best_pairs) - 6} more)"
+        pairs = self.best_pairs if limit is None else self.best_pairs[:limit]
+        shown = "; ".join(f"{a} + {b}" for a, b in pairs)
+        if len(pairs) < len(self.best_pairs):
+            shown += f"; ... (+{len(self.best_pairs) - len(pairs)} more)"
         return shown
 
 
@@ -249,7 +252,8 @@ class TypingResult:
         lines = []
         for locus, r in self.loci.items():
             inv = f"  invalid lanes: {r.invalid}" if r.invalid else ""
-            lines.append(f"HLA-{locus}: {r.genotype_text()}   "
+            # every pair: the report is where to see what a summary stands for
+            lines.append(f"HLA-{locus}: {r.genotype_text(limit=None)}   "
                          f"(score {r.score}; positives {r.positives}{inv})")
             if r.best_pairs:
                 lines.append("  summary: " + "  or  ".join(

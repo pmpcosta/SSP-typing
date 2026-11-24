@@ -22,7 +22,7 @@ import pytest
 
 from ssp.analysis import GelAnalysis, LaneCall, analyse_gel
 from ssp.trays import Tray, TrayLane, load_tray_xlsx
-from ssp.typing_engine import TypingResult, consensus_pairs, type_sample
+from ssp.typing_engine import LocusResult, TypingResult, consensus_pairs, type_sample
 
 TESTDATA = Path(os.environ.get(
     'SSP_TESTDATA_DIR',
@@ -311,3 +311,16 @@ def test_consensus_within_one_allele_group_keeps_what_every_pair_shares():
     # nothing shared: name order, and both sides shorten
     assert consensus_pairs([('A*02:01', 'A*02:05'), ('A*02:06', 'A*02:07')]) == [
         ('A*02', 'A*02')]
+
+
+def test_report_lists_every_best_pair():
+    # G_26160 HLA-C: nine pairs, not a Cartesian product. The screen stops at
+    # six; the report lists all, so each summary box can be traced to its pairs
+    c04, c08 = ('C*04:01', 'C*04:03'), ('C*08:01', 'C*08:02', 'C*08:03')
+    pairs = [(a, b) for a in c04 for b in c08] + [(b, 'C*18:01') for b in c08]
+    c = LocusResult(locus='C', positives=[76, 84], negatives=[], invalid=[],
+                    candidates=[], best_pairs=pairs, score=0, allele_options=None)
+    assert c.genotype_text().endswith('; ... (+3 more)')
+    report = TypingResult(loci={'C': c}).summary_text().splitlines()
+    assert report[0].startswith('HLA-C: ' + '; '.join(f'{a} + {b}' for a, b in pairs) + '   ')
+    assert report[1] == '  summary: C*04 + C*08  or  C*08 + C*18:01'
