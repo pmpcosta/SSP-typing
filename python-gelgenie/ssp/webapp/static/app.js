@@ -824,12 +824,19 @@ function renderTyping() {
         a false call, or the sample may carry an allele the tray sheet does not list.</div>
       <ul class="conflicts">${conflicts.map((c) =>
         `<li data-mix="${c.mix}">${escapeHtml(conflictText(c, nPairs))}</li>`).join('')}</ul>` : '';
+    // the best pairs by allele group (C*04 + C*08 or C*08 + C*18:01), one box each
+    const consensus = (loc.consensus || []).map((p, i) =>
+      `${i ? '<span class="or">or</span>' : ''}<div class="cons">${escapeHtml(p.join(' + '))}</div>`)
+      .join('');
     card.innerHTML = `
-      <div class="geno">HLA-${escapeHtml(locus)}: ${escapeHtml(genotypeText(loc))}</div>
-      <div class="meta">score ${loc.score ?? '–'} · positives:
-        ${loc.positives.length ? loc.positives.join(', ') : '—'}${escapeHtml(inv)}</div>
-      ${(loc.warnings || []).map((w) => `<div class="lwarn">⚠ ${escapeHtml(w)}</div>`).join('')}
-      ${fit}`;
+      <div class="detail">
+        <div class="geno">HLA-${escapeHtml(locus)}: ${escapeHtml(genotypeText(loc))}</div>
+        <div class="meta">score ${loc.score ?? '–'} · positives:
+          ${loc.positives.length ? loc.positives.join(', ') : '—'}${escapeHtml(inv)}</div>
+        ${(loc.warnings || []).map((w) => `<div class="lwarn">⚠ ${escapeHtml(w)}</div>`).join('')}
+        ${fit}
+      </div>
+      ${consensus ? `<div class="summary" title="best pairs by allele group">${consensus}</div>` : ''}`;
     box.appendChild(card);
   }
 }

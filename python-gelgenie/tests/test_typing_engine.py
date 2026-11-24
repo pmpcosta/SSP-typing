@@ -22,7 +22,7 @@ import pytest
 
 from ssp.analysis import GelAnalysis, LaneCall, analyse_gel
 from ssp.trays import Tray, TrayLane, load_tray_xlsx
-from ssp.typing_engine import TypingResult, type_sample
+from ssp.typing_engine import TypingResult, consensus_pairs, type_sample
 
 TESTDATA = Path(os.environ.get(
     'SSP_TESTDATA_DIR',
@@ -163,6 +163,8 @@ def test_result_to_dict_json_serializable():
     res = type_sample(ga, tray)
     json.dumps(res.to_dict())
     assert isinstance(res.summary_text(), str) and 'A' in res.summary_text()
+    assert res.to_dict()['loci']['A']['consensus'] == [['A*01:01', 'A*02:01']]
+    assert '  summary: A*01:01 + A*02:01' in res.summary_text().splitlines()
 
 
 # ---------- integration: recorded G_26160 + FLC sheet ----------
@@ -268,3 +270,32 @@ def test_unexplained_positive_lanes():
     assert (got[3].observed, got[3].alleles, got[3].pairs) == ('positive', ['A*01:01', 'A*02:01'], 1)
     assert got[3].text(2) == 'lane 3 is positive but not explained by A*01:01 + A*02:01'
     assert (got[4].observed, got[4].alleles, got[4].pairs) == ('negative', ['A*03:01'], 1)
+
+
+# ---------- summary by allele group ----------
+
+def test_consensus_names_each_side_by_the_fields_its_alleles_share():
+    # G_26160: B*15:01/B*15:34 + B*42:01 -> B*15 + B*42:01
+    assert consensus_pairs([('B*15:01', 'B*42:01'), ('B*15:34', 'B*42:01')]) == [
+        ('B*15', 'B*42:01')]
+    assert consensus_pairs([('A*31:01', 'A*33:01'), ('A*31:01', 'A*33:03')]) == [
+        ('A*31:01', 'A*33')]
+
+
+def test_consensus_keeps_different_allele_groups_apart():
+    # G_26160 HLA-C: nine pairs in two allele-group combinations
+    c04 = ('C*04:01', 'C*04:03')
+    c08 = ('C*08:01', 'C*08:02', 'C*08:03')
+    pairs = [(a, b) for a in c04 for b in c08] + [(b, 'C*18:01') for b in c08]
+    assert consensus_pairs(pairs) == [('C*04', 'C*08'), ('C*08', 'C*18:01')]
+
+
+def test_consensus_orients_pairs_and_handles_one_group_twice():
+    # a pair listed the other way round joins its group; the same allele
+    # group on both sides stays one group
+    assert consensus_pairs([('C*08:01', 'C*04:01'), ('C*04:03', 'C*08:02')]) == [
+        ('C*04', 'C*08')]
+    assert consensus_pairs([('A*02:01', 'A*02:01'), ('A*02:01', 'A*02:05')]) == [
+        ('A*02:01', 'A*02')]
+    assert consensus_pairs([('B*44', 'B*57'), ('B*44:02', 'B*57:01')]) == [('B*44', 'B*57')]
+    assert consensus_pairs([]) == []

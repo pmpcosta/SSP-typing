@@ -47,7 +47,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import combinations_with_replacement
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
 from ssp.analysis import GelAnalysis
 from ssp.trays import Tray
@@ -152,6 +152,38 @@ def _conflicts(best: List[Tuple[str, str]], cover: Dict[str, FrozenSet[int]],
     return sorted(out, key=lambda c: c.mix)
 
 
+def _shared_name(alleles: Sequence[str]) -> str:
+    """The fields every allele shares, e.g. B*15:01, B*15:34 -> B*15; a
+    single allele keeps its full name."""
+    split = [a.split(":") for a in alleles]
+    common = split[0]
+    for f in split[1:]:
+        n = 0
+        while n < min(len(common), len(f)) and common[n] == f[n]:
+            n += 1
+        common = common[:max(n, 1)]
+    return ":".join(common)
+
+
+def consensus_pairs(pairs: Sequence[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """The best pairs summarised by allele group: pairs are grouped by their
+    two first-field groups (C*04 + C*08, C*08 + C*18), and each side of a
+    group is named by the fields its alleles share. G_26160 HLA-C: nine
+    pairs -> C*04 + C*08 and C*08 + C*18:01. Groups keep the order of their
+    first pair."""
+    groups: Dict[Tuple[str, str], Tuple[List[str], List[str]]] = {}
+    for a, b in pairs:
+        fa, fb = a.split(":")[0], b.split(":")[0]
+        if (fb, fa) < (fa, fb):
+            a, b, fa, fb = b, a, fb, fa
+        left, right = groups.setdefault((fa, fb), ([], []))
+        if a not in left:
+            left.append(a)
+        if b not in right:
+            right.append(b)
+    return [(_shared_name(l), _shared_name(r)) for l, r in groups.values()]
+
+
 @dataclass
 class LocusResult:
     locus: str
@@ -177,6 +209,7 @@ class LocusResult:
             "allele_options": self.allele_options,
             "warnings": self.warnings,
             "conflicts": [c.to_dict() for c in self.conflicts],
+            "consensus": [list(p) for p in consensus_pairs(self.best_pairs)],
         }
 
     def genotype_text(self) -> str:
@@ -207,6 +240,9 @@ class TypingResult:
             inv = f"  invalid lanes: {r.invalid}" if r.invalid else ""
             lines.append(f"HLA-{locus}: {r.genotype_text()}   "
                          f"(score {r.score}; positives {r.positives}{inv})")
+            if r.best_pairs:
+                lines.append("  summary: " + "  or  ".join(
+                    f"{a} + {b}" for a, b in consensus_pairs(r.best_pairs)))
             if r.conflicts:
                 lines.append(f"  no listed pair fits: each best pair conflicts with "
                              f"{r.score} lane(s):")

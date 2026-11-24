@@ -150,6 +150,17 @@ a.dl:hover { border-color: var(--accent); }
 .locus-card .geno { font-size: 1.05em; font-weight: 600; }
 .locus-card .meta { color: var(--muted); font-size: 0.85em; margin-top: 0.2em; }
 .locus-card .lwarn { color: var(--warn); font-size: 0.85em; }
+.locus-card { display: flex; align-items: flex-start; gap: 1em; }
+.locus-card .detail { flex: 1; min-width: 0; }
+.locus-card .summary { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4em;
+                       justify-content: flex-end; max-width: 45%; }
+.locus-card .cons { border: 1px solid var(--accent); border-radius: 5px; padding: 0.25em 0.7em;
+                    font-weight: 600; white-space: nowrap; background: var(--panel2); }
+.locus-card .summary .or { color: var(--muted); font-size: 0.85em; }
+@media (max-width: 700px) {
+  .locus-card { flex-direction: column; }
+  .locus-card .summary { max-width: none; justify-content: flex-start; }
+}
 
 #lane-table-wrap { max-height: 45vh; overflow: auto; border: 1px solid #000; border-radius: 6px; }
 #lane-table { border-collapse: collapse; width: 100%; font-size: 0.85em; }
