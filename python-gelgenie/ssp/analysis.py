@@ -25,7 +25,9 @@ Pipeline (mirrors the validated G_26160 analysis recipe):
 3. Per (panel, control-bp) group, the control row is found as the densest
    50-px y-window across the group's bands, then each lane picks its closest
    band within tolerance; a quadratic smile fit (or median for small groups)
-   refines the picks over two rounds.
+   refines the picks over two rounds. The primer-dimer front runs ahead of
+   everything, so when it nearly ties with a row just above it, that row is
+   the control (the front is in every lane, controls can be missing).
 4. Fragment sizes are estimated per lane relative to its own control:
    ``bp_est = bp_ctrl * exp((y_ctrl - y_band) / b)`` where b (px per ln(bp))
    is auto-calibrated when one panel hosts two different control sizes
@@ -33,7 +35,9 @@ Pipeline (mirrors the validated G_26160 analysis recipe):
    to :data:`DEFAULT_BP_SLOPE`.
 5. Bands are classified: control / product (matches a sheet size within
    tolerance) / dimer (below the smallest credible product) / hmw artifact /
-   unexplained.
+   unexplained. A listed product expected nearer the panel's dimer front than
+   the control is matched by position instead (nearest of control, product,
+   front), since sizes run large there and the dimer itself would match.
 
 Known limitation: on stitched composites, a panel seam and a missing lane are
 distinguished only by gap ratio (~2x = missing lane, ~>2.4x = seam). A wholly
@@ -262,30 +266,55 @@ class GelAnalysis:
 
 
 def _window_rows(ys: np.ndarray, lanes: np.ndarray, width: float,
-                 min_lanes: float = 0, k: int = 3) -> List[float]:
-    """Up to ``k`` candidate rows, best first: the median y of the densest
-    y-window (ties prefer more distinct lanes), then the densest window of
-    the bands left, and so on. Only windows with bands from at least
-    ``min_lanes`` lanes count."""
+                 min_lanes: float = 0, k: int = 3,
+                 heights: Optional[np.ndarray] = None) -> List[Tuple[float, int, float]]:
+    """Up to ``k`` candidate rows, best first, as (y, distinct lanes, median
+    band height): the median y of the densest y-window (ties prefer more
+    distinct lanes), then the densest window of the bands left, and so on.
+    Only windows with bands from at least ``min_lanes`` lanes count."""
     ys, lanes = np.asarray(ys, dtype=float), np.asarray(lanes)
-    rows: List[float] = []
+    hs = np.zeros(len(ys)) if heights is None else np.asarray(heights, dtype=float)
+    rows: List[Tuple[float, int, float]] = []
     while len(ys) and len(rows) < k:
         order = np.argsort(ys)
-        ys_s, lanes_s = ys[order], lanes[order]
-        best = (0, 0, None, None)
+        ys_s, lanes_s, hs_s = ys[order], lanes[order], hs[order]
+        best = (0, 0, None, None, 0.0)
         for i in range(len(ys_s)):
             j = np.searchsorted(ys_s, ys_s[i] + width, side="left")
             count = j - i
             distinct = len(set(lanes_s[i:j].tolist()))
             if distinct >= min_lanes and (count, distinct) > (best[0], best[1]):
-                best = (count, distinct, float(np.median(ys_s[i:j])), (ys_s[i], ys_s[j - 1]))
+                best = (count, distinct, float(np.median(ys_s[i:j])), (ys_s[i], ys_s[j - 1]),
+                        float(np.median(hs_s[i:j])))
         if best[2] is None:
             break
-        rows.append(best[2])
+        rows.append((best[2], best[1], best[4]))
         lo, hi = best[3]
         keep = (ys < lo) | (ys > hi)
-        ys, lanes = ys[keep], lanes[keep]
+        ys, lanes, hs = ys[keep], lanes[keep], hs[keep]
     return rows
+
+
+def _dimer_front_last(rows: List[Tuple[float, int, float]], ctrl_bp: int,
+                      tie: float = 0.8, diffuse: float = 1.25) -> List[float]:
+    """Candidate row ys, best first, with the primer-dimer front moved behind
+    the control row it outvotes. Dimers run ahead of every product and smear
+    into taller bands, so when the best row is ``diffuse`` (its bands at
+    least that much taller than those of the runner-up), and the runner-up
+    sits in nearly as many lanes (``tie``) just above it, close enough that
+    the best row would size as a dimer from there, the runner-up is the
+    control row and the best row is the dimer front (Gel_04 lanes 33-64: the
+    dimer row has 18 px bands in 31 lanes, the 256 bp control row 12 px bands
+    in 29). A row of sharp bands below the controls is a product row and
+    keeps its rank."""
+    ys = [r[0] for r in rows]
+    if len(rows) < 2:
+        return ys
+    (y0, n0, h0), (y1, n1, h1) = rows[0], rows[1]
+    if (y1 < y0 and n1 >= tie * n0 and h0 >= diffuse * h1
+            and estimate_bp(y0, y1, ctrl_bp, DEFAULT_BP_SLOPE) < DIMER_MAX_BP):
+        ys[0], ys[1] = ys[1], ys[0]
+    return ys
 
 
 def _ordered_rows(cands: List[Tuple[int, List[float]]]) -> List[Optional[float]]:
@@ -361,7 +390,9 @@ def _fit_controls(
         def rows_of(cands: Dict[int, List[Band]], min_lanes: float = 0) -> List[float]:
             ys = [b.centroid_y for i in group for b in cands[i]]
             ls = [i for i in group for _ in cands[i]]
-            return _window_rows(np.asarray(ys), np.asarray(ls), 50.0, min_lanes)
+            hs = [b.bbox[2] - b.bbox[0] for i in group for b in cands[i]]
+            return _dimer_front_last(_window_rows(
+                np.asarray(ys), np.asarray(ls), 50.0, min_lanes, heights=np.asarray(hs)), bp)
 
         cands = {i: lane_bands[i] for i in group}
         rows = rows_of(cands)
@@ -427,6 +458,44 @@ def _fit_controls(
                     slope_estimates.append(slope)
     slope_b = float(np.mean(slope_estimates)) if slope_estimates else DEFAULT_BP_SLOPE
     return picks, slope_b, panels, bool(slope_estimates)
+
+
+def _dimer_fronts(
+    lane_bands: List[List[Band]],
+    picks: Dict[int, Optional[Band]],
+    ctrl_bps: List[int],
+    panels: List[Tuple[int, int]],
+    slope_b: float,
+    reach: int = 4,
+) -> Dict[int, float]:
+    """Expected y of the primer-dimer front per lane (lane index -> y).
+
+    Each lane with a control contributes its lowest band below
+    :data:`DIMER_MAX_BP` (the front runs ahead of everything, so a small
+    product sits above it); a lane's front is the median of those from the
+    other lanes of its panel within ``reach`` lanes, or of all the panel's
+    other lanes when fewer than three are near. A lane never counts its own
+    band, which is the one being judged. Lanes of a panel with fewer than
+    three dimer bands get no front."""
+    seen: Dict[int, float] = {}
+    for i, lb in enumerate(lane_bands):
+        ctrl = picks.get(i)
+        if ctrl is None:
+            continue
+        low = [b for b in lb if b is not ctrl and estimate_bp(
+            b.centroid_y, ctrl.centroid_y, ctrl_bps[i], slope_b) < DIMER_MAX_BP]
+        if low:
+            seen[i] = max(b.centroid_y for b in low)
+    fronts: Dict[int, float] = {}
+    for p0, p1 in panels:
+        inside = {i: y for i, y in seen.items() if p0 <= i <= p1}
+        if len(inside) < 3:
+            continue
+        for i in range(p0, p1 + 1):
+            others = {j: y for j, y in inside.items() if j != i}
+            near = [y for j, y in others.items() if abs(j - i) <= reach]
+            fronts[i] = float(np.median(near if len(near) >= 3 else list(others.values())))
+    return fronts
 
 
 def _cluster_centers(lane_bands: List[List[Band]]) -> List[float]:
@@ -512,6 +581,9 @@ def analyse_gel(
     slope = float(slope_b) if slope_b is not None else slope_auto
     panels_mix = [(mixes[p0], mixes[p1]) for p0, p1 in panels]
 
+    fronts = _dimer_fronts(lane_bands, picks, [ctrl_bps_all[m] for m in mixes],
+                           panels, slope)
+
     lanes_out: List[LaneCall] = []
     if slope_b is None and not calibrated:
         warnings.append(
@@ -544,6 +616,28 @@ def analyse_gel(
             if ctrl is None or bp_est is None:
                 calls.append(BandCall(b, None, "unclassified"))
                 continue
+            # near the dimer front, sizes from the control run large and the
+            # dimer itself can fall within tolerance of a small product, so a
+            # small product (expected nearer the front than the control) is
+            # matched by position: a band between the control and the front
+            # is that product when it lies nearer the product's spot than
+            # either (Gel_04 lanes 54, 57, 69 hold only a dimer on the front;
+            # G_26160 lane 84 and Gel_01 lane 57 a product above it that
+            # sizes 25-33% too large)
+            front = fronts.get(i)
+            small: List[int] = []
+            if front is not None and b.centroid_y > ctrl.centroid_y:
+                at = {s: ctrl.centroid_y - slope * math.log(s / ctrl_bp) for s in sizes}
+                small = [s for s in sizes if at[s] > (ctrl.centroid_y + front) / 2]
+                if small:
+                    s = min(small, key=lambda s: abs(b.centroid_y - at[s]))
+                    d = abs(b.centroid_y - at[s])
+                    if (b.centroid_y < front and d < front - b.centroid_y
+                            and d < b.centroid_y - ctrl.centroid_y):
+                        calls.append(BandCall(b, bp_est, "product", s))
+                        positive = True
+                        continue
+            sizes = [s for s in sizes if s not in small]
             hit = min(sizes, key=lambda s: abs(bp_est - s) / s) if sizes else None
             if hit is not None and abs(bp_est - hit) / hit <= match_tol:
                 calls.append(BandCall(b, bp_est, "product", hit))
