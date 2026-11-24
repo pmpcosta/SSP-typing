@@ -25,6 +25,7 @@ from ssp.analysis import (
     DEFAULT_BP_SLOPE,
     GelAnalysis,
     LaneMap,
+    _dimer_fronts,
     analyse_gel,
     assign_to_slots,
     cluster_lanes,
@@ -457,6 +458,13 @@ def test_unknown_band_kind_is_rejected():
 
 # ---------- the primer-dimer front ----------
 
+def _smear(x, y, area=500, height=18):
+    """A dimer band: diffuse, so taller than a control or product (Gel_04:
+    18-20 px against 12)."""
+    return Band(id=0, area=area, centroid_y=float(y), centroid_x=float(x),
+                bbox=(int(y) - height // 2, int(x) - 8, int(y) + height // 2, int(x) + 8))
+
+
 def test_dimer_row_does_not_outvote_the_control_row():
     # Gel_04 lanes 33-64: the 256 bp controls (y 254) are missing in three
     # lanes that hold only a strong dimer, so the dimer front (y 308) has
@@ -468,7 +476,7 @@ def test_dimer_row_does_not_outvote_the_control_row():
         if i not in no_ctrl:
             bands.append(_band(x, 254, area=400))
         if i:
-            bands.append(_band(x, 308, area=500))
+            bands.append(_smear(x, 308))
     bands += [_band(20 + i * 50, 199) for i in (3, 8, 13)]  # three products
     lm = LaneMap(slots=[(i * 50, i * 50 + 40) for i in range(32)], panels=[(0, 31)])
     ga = analyse_gel(bands, _tray(32, products={i: [600] for i in range(1, 33)}),
@@ -505,3 +513,47 @@ def test_a_product_away_from_the_dimer_front_still_matches_by_size():
     ga = analyse_gel(bands, _tray(8, products={i: [200] for i in range(1, 9)}),
                      slope_b=63.09)
     assert [l.mix for l in ga.lanes if l.positive] == [3]
+
+
+def test_a_sharp_product_row_below_the_controls_stays_a_product_row():
+    # seven lanes share a 600 bp product just above the controls: that row
+    # nearly ties with the control row and sits at dimer distance from it,
+    # but its bands are as sharp as the controls, so it is no dimer front
+    bands = [_band(20 + i * 50, 240, area=400) for i in range(8)]
+    bands += [_band(20 + i * 50, 171) for i in range(7)]
+    ga = analyse_gel(bands, _tray(8, products={i: [600] for i in range(1, 9)}))
+    assert [l.control_y for l in ga.lanes] == [240] * 8
+    assert [l.mix for l in ga.lanes if l.positive] == list(range(1, 8))
+
+
+def test_a_small_product_above_the_front_is_not_taken_for_the_front():
+    # every lane has a listed 128 bp product (y 297, the bigger band) and the
+    # dimer front below it (y 320): the front is the lowest low band
+    bands = []
+    for i in range(8):
+        bands += [_band(20 + i * 50, 240, area=400), _band(20 + i * 50, 297, area=600),
+                  _smear(20 + i * 50, 320)]
+    ga = analyse_gel(bands, _tray(8, products={i: [128] for i in range(1, 9)}))
+    assert all(l.positive for l in ga.lanes)
+    assert {(round(c.band.centroid_y), c.kind) for l in ga.lanes for c in l.calls
+            if c.kind != 'control'} == {(297, 'product'), (320, 'dimer')}
+
+
+def test_a_lane_never_counts_its_own_band_in_its_front():
+    lane_bands = [[_band(20 + i * 50, 240), _smear(20 + i * 50, y)]
+                  for i, y in enumerate((296, 297, 300))]
+    picks = {i: lb[0] for i, lb in enumerate(lane_bands)}
+    fronts = _dimer_fronts(lane_bands, picks, [256] * 3, [(0, 2)], 81.0)
+    assert fronts == {0: 298.5, 1: 298.0, 2: 296.5}
+
+
+def test_a_band_below_the_front_is_never_a_small_product():
+    # y 400 is nearer the 128 bp spot (~302) than the front (297) but lies
+    # below the front: a dimer, not the product
+    bands = []
+    for i in range(8):
+        bands += [_band(20 + i * 50, 240, area=400), _smear(20 + i * 50, 297)]
+    bands.append(_band(20 + 2 * 50, 400))
+    ga = analyse_gel(bands, _tray(8, products={i: [128] for i in range(1, 9)}),
+                     slope_b=90.0)
+    assert not any(l.positive for l in ga.lanes)
