@@ -90,6 +90,16 @@ _BAND_CORE = ("id", "area", "centroid_y", "centroid_x", "bbox", "lane")
 SYNTHETIC_ID_BASE = 1_000_000
 
 
+def _list_field(body: Dict, key: str) -> List:
+    """An edits list; absent or null is empty, anything else is a 400."""
+    v = body.get(key)
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        raise ValueError(f"{key} must be a list: {v!r}")
+    return v
+
+
 def _check_kind(kind) -> str:
     if kind not in MANUAL_KINDS:
         raise ValueError(f"band kind must be one of {list(MANUAL_KINDS)}: {kind!r}")
@@ -571,7 +581,7 @@ class SessionStore:
             raise ValueError("edits body must be a JSON object")
         mixes = {l.mix for l in tray.lanes}
         overrides = []
-        for ov in body.get("lane_overrides") or ():
+        for ov in _list_field(body, "lane_overrides"):
             if not isinstance(ov, dict) or "mix" not in ov:
                 raise ValueError(f"lane override needs 'mix': {ov!r}")
             try:
@@ -594,7 +604,7 @@ class SessionStore:
         # synthetic (user-added) bands are removed via added_bands, not here
         deleted = [b for b in deleted if b < SYNTHETIC_ID_BASE]
         added = []
-        for ab in body.get("added_bands") or ():
+        for ab in _list_field(body, "added_bands"):
             if not isinstance(ab, dict) or "x" not in ab or "y" not in ab:
                 raise ValueError(f"added band needs x and y: {ab!r}")
             try:
@@ -610,7 +620,7 @@ class SessionStore:
         # the user's band classifications, by detected band id (an added
         # band carries its own kind: its id shifts when another is removed)
         kinds: Dict[int, str] = {}
-        for bk in body.get("band_kinds") or ():
+        for bk in _list_field(body, "band_kinds"):
             if not isinstance(bk, dict) or "id" not in bk or "kind" not in bk:
                 raise ValueError(f"band kind needs id and kind: {bk!r}")
             try:

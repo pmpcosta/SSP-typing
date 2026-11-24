@@ -529,7 +529,10 @@ def test_band_kind_edits_are_validated(client):
            {'band_kinds': [{'id': 'x', 'kind': 'product'}]},
            {'band_kinds': [{'kind': 'product'}]},
            {'band_kinds': [{'id': 1_000_000, 'kind': 'product'}]},
-           {'added_bands': [{'x': 1, 'y': 2, 'kind': 'nope'}]}]
+           {'added_bands': [{'x': 1, 'y': 2, 'kind': 'nope'}]},
+           # not lists: a 400, not a 500 from iterating them
+           {'band_kinds': 1}, {'added_bands': 1}, {'lane_overrides': 1},
+           {'band_kinds': {'id': 1, 'kind': 'product'}}]
     for body in bad:
         r = client.post(url, json=body)
         assert r.status_code == 400, body

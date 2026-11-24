@@ -273,6 +273,7 @@ async function uploadTray(ev) {
 async function setState(data, { refit = false, newSession = false,
                                 adoptEdits = true } = {}) {
   if (newSession || data.id !== state.sid) {
+    closeBandMenu();   // its callbacks hold the previous session's band
     state.sid = data.id;
     state.img = null;
     state.maskCanvas = null;
@@ -577,9 +578,7 @@ function onCanvasClick(ev) {
       const i = addedIndex(hit);
       if (i !== -1) edits.added_bands.splice(i, 1);
       else return;
-    } else if (!edits.deleted_bands.includes(hit.id)) {
-      edits.deleted_bands.push(hit.id);
-    } else {
+    } else if (!deleteBand(hit.id)) {
       return;   // already deleted client-side; don't double-push
     }
     queuePush();
@@ -631,10 +630,23 @@ function bandAt(ix, iy) {
   return hits[0];
 }
 
-// index of a user-added band in edits.added_bands, matched by position
+// index of a user-added band in edits.added_bands: its stored position
+// comes back unchanged as the band's centroid, so match it exactly (a
+// tolerance could pick a neighbouring added band)
 function addedIndex(bd) {
   return currentEdits().added_bands.findIndex((ab) =>
-    Math.abs(ab.x - bd.centroid_x) < 0.51 && Math.abs(ab.y - bd.centroid_y) < 0.51);
+    ab.x === bd.centroid_x && ab.y === bd.centroid_y);
+}
+
+// delete a detected band; it forgets any kind set by hand, so a restored
+// band starts automatic (a hidden "control" could otherwise come back
+// next to the lane's newer one)
+function deleteBand(id) {
+  const edits = currentEdits();
+  if (edits.deleted_bands.includes(id)) return false;
+  edits.deleted_bands.push(id);
+  edits.band_kinds = edits.band_kinds.filter((k) => k.id !== id);
+  return true;
 }
 
 // set (or with kind=null clear) the user's kind for a band; one control per
@@ -704,8 +716,8 @@ function openBandMenu(bd, lane, cx, cy) {
       const i = addedIndex(bd);
       if (i === -1) return;
       edits.added_bands.splice(i, 1);
-    } else if (!edits.deleted_bands.includes(bd.id)) {
-      edits.deleted_bands.push(bd.id);
+    } else if (!deleteBand(bd.id)) {
+      return;
     }
     queuePush();
   }, { cls: bd.manual ? 'danger' : 'sep danger' });
