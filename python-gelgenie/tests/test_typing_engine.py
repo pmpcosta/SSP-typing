@@ -308,9 +308,24 @@ def test_consensus_within_one_allele_group_keeps_what_every_pair_shares():
     # A*02:05 is in every pair: it stays named on its own side
     assert consensus_pairs([('A*02:01', 'A*02:05'), ('A*02:05', 'A*02:06')]) == [
         ('A*02:05', 'A*02')]
-    # nothing shared: name order, and both sides shorten
-    assert consensus_pairs([('A*02:01', 'A*02:05'), ('A*02:06', 'A*02:07')]) == [
-        ('A*02', 'A*02')]
+    # nothing shared: name order, and both sides shorten to the one group,
+    # which is named once
+    assert consensus_pairs([('A*02:01', 'A*02:05'), ('A*02:06', 'A*02:07')]) == [('A*02',)]
+
+
+def test_consensus_names_a_single_identified_allele_once():
+    # Gel_01 HLA-A: A*02:02/05-09/17 on both sides -> A*02, not A*02 + A*02
+    a02 = ['A*02:02', 'A*02:05', 'A*02:06', 'A*02:07', 'A*02:08', 'A*02:09', 'A*02:17']
+    pairs = [(a, b) for i, a in enumerate(a02) for b in a02[i:]]
+    assert consensus_pairs(pairs) == [('A*02',)]
+    assert consensus_pairs([('A*02:01', 'A*02:01')]) == [('A*02:01',)]
+    # one group summarised once, another as a pair
+    assert consensus_pairs([('C*04:01', 'C*04:01'), ('C*04:01', 'C*07:01')]) == [
+        ('C*04:01',), ('C*04:01', 'C*07:01')]
+    tray = _tray({1: 'A*01:01', 2: 'A*02:01'})
+    res = type_sample(_ga(positives=[1], negatives=[2]), tray)
+    assert res.to_dict()['loci']['A']['consensus'] == [['A*01:01']]
+    assert '  summary: A*01:01' in res.summary_text().splitlines()
 
 
 def test_report_lists_every_best_pair():
