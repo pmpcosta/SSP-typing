@@ -299,3 +299,15 @@ def test_consensus_orients_pairs_and_handles_one_group_twice():
         ('A*02:01', 'A*02')]
     assert consensus_pairs([('B*44', 'B*57'), ('B*44:02', 'B*57:01')]) == [('B*44', 'B*57')]
     assert consensus_pairs([]) == []
+
+
+def test_consensus_within_one_allele_group_keeps_what_every_pair_shares():
+    # the same pair in both orders is one pair, not A*02 + A*02
+    assert consensus_pairs([('A*02:01', 'A*02:05'), ('A*02:05', 'A*02:01')]) == [
+        ('A*02:01', 'A*02:05')]
+    # A*02:05 is in every pair: it stays named on its own side
+    assert consensus_pairs([('A*02:01', 'A*02:05'), ('A*02:05', 'A*02:06')]) == [
+        ('A*02:05', 'A*02')]
+    # nothing shared: name order, and both sides shorten
+    assert consensus_pairs([('A*02:01', 'A*02:05'), ('A*02:06', 'A*02:07')]) == [
+        ('A*02', 'A*02')]

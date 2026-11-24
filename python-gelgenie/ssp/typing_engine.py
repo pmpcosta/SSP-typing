@@ -170,18 +170,29 @@ def consensus_pairs(pairs: Sequence[Tuple[str, str]]) -> List[Tuple[str, str]]:
     two first-field groups (C*04 + C*08, C*08 + C*18), and each side of a
     group is named by the fields its alleles share. G_26160 HLA-C: nine
     pairs -> C*04 + C*08 and C*08 + C*18:01. Groups keep the order of their
-    first pair."""
-    groups: Dict[Tuple[str, str], Tuple[List[str], List[str]]] = {}
+    first pair.
+
+    Within one group (A*02 + A*02) a pair's sides are interchangeable: an
+    allele in every pair of the group takes the left side, so A*02:01 +
+    A*02:05 and A*02:05 + A*02:06 give A*02:05 + A*02, not A*02 + A*02;
+    otherwise each pair is put in name order."""
+    groups: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
     for a, b in pairs:
         fa, fb = a.split(":")[0], b.split(":")[0]
-        if (fb, fa) < (fa, fb):
+        if (fb, b) < (fa, a):
             a, b, fa, fb = b, a, fb, fa
-        left, right = groups.setdefault((fa, fb), ([], []))
-        if a not in left:
-            left.append(a)
-        if b not in right:
-            right.append(b)
-    return [(_shared_name(l), _shared_name(r)) for l, r in groups.values()]
+        groups.setdefault((fa, fb), []).append((a, b))
+    out: List[Tuple[str, str]] = []
+    for (fa, fb), members in groups.items():
+        if fa == fb:
+            shared = set.intersection(*({a, b} for a, b in members))
+            if shared:
+                anchor = min(shared)
+                members = [(a, b) if a == anchor else (b, a) for a, b in members]
+        left = list(dict.fromkeys(a for a, _ in members))
+        right = list(dict.fromkeys(b for _, b in members))
+        out.append((_shared_name(left), _shared_name(right)))
+    return out
 
 
 @dataclass
