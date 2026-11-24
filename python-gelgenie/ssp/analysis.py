@@ -200,6 +200,7 @@ class BandCall:
     bp_est: Optional[float]
     kind: str  # control | product | dimer | hmw | unexplained | unclassified
     matched_bp: Optional[int] = None
+    manual: bool = False  # kind set by the user, not by the size match
 
     def to_dict(self) -> Dict:
         d = self.band.to_dict()
@@ -207,8 +208,13 @@ class BandCall:
             "bp_est": round(self.bp_est, 1) if self.bp_est is not None else None,
             "kind": self.kind,
             "matched_bp": self.matched_bp,
+            "manual": self.manual,
         })
         return d
+
+
+# kinds a user may assign to a band (``band_kinds`` in :func:`analyse_gel`)
+MANUAL_KINDS = ("control", "product", "dimer", "hmw", "unexplained")
 
 
 @dataclass
@@ -324,6 +330,7 @@ def _fit_controls(
     centers: List[float],
     panels: Optional[List[Tuple[int, int]]] = None,
     well_zone: float = 0.0,
+    forced: Optional[Dict[int, Band]] = None,
 ) -> Tuple[Dict[int, Optional[Band]], float, List[Tuple[int, int]], bool]:
     """Pick control bands per lane; returns (picks, slope_b, panels, calibrated).
 
@@ -331,7 +338,9 @@ def _fit_controls(
     Bands with y < ``well_zone`` are not control candidates, unless the rest
     cannot give a control row in at least half of a group's lanes: a row of
     well marks is in every lane and would otherwise outvote a control row
-    with one empty lane."""
+    with one empty lane. ``forced`` (lane index -> band) are the user's
+    control choices: they replace the lane's pick and count for calibration."""
+    forced = forced or {}
     if panels is None:
         panels = _panel_ranges(centers)
     picks: Dict[int, Optional[Band]] = {}
@@ -398,6 +407,8 @@ def _fit_controls(
             elif got:
                 med = float(np.median([g[1] for g in got]))
                 pred_fn = lambda m, v=med: v  # noqa: E731
+    for i, b in forced.items():
+        picks[i] = b
 
     # slope calibration: panels hosting >=2 control sizes with >=3 picks each
     slope_estimates = []
@@ -441,6 +452,7 @@ def analyse_gel(
     slope_b: Optional[float] = None,
     match_tol: float = 0.25,
     lane_map: Optional[LaneMap] = None,
+    band_kinds: Optional[Dict[int, str]] = None,
 ) -> GelAnalysis:
     """Full post-segmentation analysis against a tray definition.
 
@@ -448,7 +460,17 @@ def analyse_gel(
     ``slope_b`` overrides auto-calibration when given. With ``lane_map``,
     lanes and panels come from the known geometry instead of band gaps
     (``lane_gap`` is then unused).
+
+    ``band_kinds`` (band id -> one of :data:`MANUAL_KINDS`) are the user's
+    classifications, which win over the size match: a ``product`` makes its
+    lane positive whatever its estimated size; a ``control`` becomes the
+    lane's control (the largest, if several are marked); a band given any
+    other kind is never picked as a control.
     """
+    band_kinds = {int(k): v for k, v in (band_kinds or {}).items()}
+    bad = sorted({v for v in band_kinds.values() if v not in MANUAL_KINDS})
+    if bad:
+        raise ValueError(f"unknown band kind(s) {bad}; use one of {list(MANUAL_KINDS)}")
     mixes = [l.mix for l in sorted(tray.lanes, key=lambda l: l.mix)]
     if mixes != list(range(1, len(mixes) + 1)):
         raise ValueError("tray mixes must be consecutive 1..N for lane alignment")
@@ -475,9 +497,18 @@ def analyse_gel(
         lane_bands = cluster_lanes(bands, expected_count=len(mixes), gap=lane_gap)
         centers = _cluster_centers(lane_bands)
 
+    # the user's kinds: marked controls are forced picks; bands marked as
+    # anything else are not control candidates
+    forced: Dict[int, Band] = {}
+    ctrl_cands: List[List[Band]] = []
+    for i, lb in enumerate(lane_bands):
+        marked = [b for b in lb if band_kinds.get(b.id) == "control"]
+        if marked:
+            forced[i] = max(marked, key=lambda b: b.area)
+        ctrl_cands.append([b for b in lb if b.id not in band_kinds])
     picks, slope_auto, panels, calibrated = _fit_controls(
-        lane_bands, mixes, [ctrl_bps_all[m] for m in mixes], centers, known_panels,
-        well_zone)
+        ctrl_cands, mixes, [ctrl_bps_all[m] for m in mixes], centers, known_panels,
+        well_zone, forced)
     slope = float(slope_b) if slope_b is not None else slope_auto
     panels_mix = [(mixes[p0], mixes[p1]) for p0, p1 in panels]
 
@@ -493,13 +524,26 @@ def analyse_gel(
         positive = False
         for b in sorted(lane_bands[i], key=lambda b: b.centroid_y):
             if ctrl is not None and b is ctrl:
-                calls.append(BandCall(b, float(ctrl_bp), "control", int(ctrl_bp)))
+                calls.append(BandCall(b, float(ctrl_bp), "control", int(ctrl_bp),
+                                      manual=i in forced))
                 continue
-            if ctrl is None:
+            bp_est = (estimate_bp(b.centroid_y, ctrl.centroid_y, ctrl_bp, slope)
+                      if ctrl is not None else None)
+            sizes = products_all[mix]
+            manual = band_kinds.get(b.id)
+            if manual not in (None, "control"):
+                matched = None
+                if manual == "product":
+                    positive = True
+                    if sizes:  # the tray size it stands for: nearest, or the only one
+                        matched = (min(sizes, key=lambda s: abs(bp_est - s) / s)
+                                   if bp_est is not None else
+                                   (sizes[0] if len(sizes) == 1 else None))
+                calls.append(BandCall(b, bp_est, manual, matched, manual=True))
+                continue
+            if ctrl is None or bp_est is None:
                 calls.append(BandCall(b, None, "unclassified"))
                 continue
-            bp_est = estimate_bp(b.centroid_y, ctrl.centroid_y, ctrl_bp, slope)
-            sizes = products_all[mix]
             hit = min(sizes, key=lambda s: abs(bp_est - s) / s) if sizes else None
             if hit is not None and abs(bp_est - hit) / hit <= match_tol:
                 calls.append(BandCall(b, bp_est, "product", hit))

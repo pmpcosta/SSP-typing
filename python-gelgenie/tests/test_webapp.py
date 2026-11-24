@@ -119,7 +119,8 @@ def test_create_session_runs_pipeline(client):
     assert t['score'] == 0
     assert t['positives'] == [1, 2, 3]
     assert t['best_pairs'] == [['A*01:01', 'A*02:01']]
-    assert s['edits'] == {'lane_overrides': [], 'deleted_bands': [], 'added_bands': []}
+    assert s['edits'] == {'lane_overrides': [], 'deleted_bands': [], 'added_bands': [],
+                          'band_kinds': []}
     assert s['defaults'] == {'match_tol': 0.25, 'lane_gap': 20.0}
     # tray summary for the UI results table
     assert [l['mix'] for l in s['tray']['lanes']] == [1, 2, 3, 4, 5]
@@ -485,3 +486,51 @@ def test_forced_polarity_is_recorded(client):
     assert r.status_code == 200, r.text
     assert r.json()['params']['invert'] is False
     assert r.json()['params']['invert_auto'] is False
+
+
+# ---------- bands classified by hand ----------
+
+def _band_at(state, mix, y):
+    lane = next(l for l in state['analysis']['lanes'] if l['mix'] == mix)
+    return next(b for b in lane['bands'] if abs(b['centroid_y'] - y) < 5)
+
+
+def test_band_kind_edit_retypes_and_round_trips(client):
+    s = _create(client)
+    sid = s['id']
+    product = _band_at(s, 1, 30)      # lane 1's product
+    r = client.post(f'/api/sessions/{sid}/edits', json={
+        'band_kinds': [{'id': product['id'], 'kind': 'unexplained'}]})
+    assert r.status_code == 200, r.text
+    s2 = r.json()
+    assert s2['typing']['loci']['A']['positives'] == [2, 3]
+    b = _band_at(s2, 1, 30)
+    assert (b['kind'], b['manual']) == ('unexplained', True)
+    assert s2['edits']['band_kinds'] == [{'id': product['id'], 'kind': 'unexplained'}]
+    # the edit survives a reload and is audited
+    assert client.get(f'/api/sessions/{sid}').json()['edits'] == s2['edits']
+    assert 'set by hand' in client.get(f'/api/sessions/{sid}/report.txt').text
+
+
+def test_added_band_carries_its_own_kind(client):
+    s = _create(client)
+    r = client.post(f"/api/sessions/{s['id']}/edits", json={
+        'added_bands': [{'x': 175.0, 'y': 15.0, 'kind': 'product'}]})  # lane 4
+    assert r.status_code == 200, r.text
+    s2 = r.json()
+    assert s2['typing']['loci']['A']['positives'] == [1, 2, 3, 4]
+    assert s2['edits']['added_bands'] == [{'x': 175.0, 'y': 15.0, 'kind': 'product'}]
+
+
+def test_band_kind_edits_are_validated(client):
+    s = _create(client)
+    url = f"/api/sessions/{s['id']}/edits"
+    bad = [{'band_kinds': [{'id': 1, 'kind': 'positive'}]},
+           {'band_kinds': [{'id': 'x', 'kind': 'product'}]},
+           {'band_kinds': [{'kind': 'product'}]},
+           {'band_kinds': [{'id': 1_000_000, 'kind': 'product'}]},
+           {'added_bands': [{'x': 1, 'y': 2, 'kind': 'nope'}]}]
+    for body in bad:
+        r = client.post(url, json=body)
+        assert r.status_code == 400, body
+    assert client.get(f"/api/sessions/{s['id']}").json()['edits']['band_kinds'] == []

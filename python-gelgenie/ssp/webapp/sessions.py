@@ -65,7 +65,7 @@ from typing import Dict, List, Optional, Tuple
 import imageio.v2 as imageio
 import numpy as np
 
-from ssp.analysis import analyse_gel
+from ssp.analysis import MANUAL_KINDS, analyse_gel
 from ssp.bands import Band
 from ssp.cli import _infer_dtype_max, detect_invert, segment_image
 from ssp.inference import GelGenieONNX
@@ -88,6 +88,12 @@ _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _BAND_CORE = ("id", "area", "centroid_y", "centroid_x", "bbox", "lane")
 # synthetic (user-added) bands get ids far above any real band id
 SYNTHETIC_ID_BASE = 1_000_000
+
+
+def _check_kind(kind) -> str:
+    if kind not in MANUAL_KINDS:
+        raise ValueError(f"band kind must be one of {list(MANUAL_KINDS)}: {kind!r}")
+    return kind
 UPLOAD_TTL_S = 24 * 3600
 PREVIEW_MAX_W = 3000
 LAYOUT_SOURCES = ("detect", "last", "even")
@@ -471,7 +477,7 @@ class SessionStore:
                                          f"last-{layout_obj.preset}.json"))
         _atomic_write_json(sdir / "meta.json", meta, indent=1)
         self._write_edits(sdir, {"lane_overrides": [], "deleted_bands": [],
-                                 "added_bands": []})
+                                 "added_bands": [], "band_kinds": []})
         state = self._recompute(sid)
         if upload_id:
             shutil.rmtree(self.config.uploads_dir / upload_id, ignore_errors=True)
@@ -538,7 +544,7 @@ class SessionStore:
         try:
             old_edits = json.loads((sdir / "edits.json").read_text())
         except (OSError, ValueError):
-            old_edits = {"lane_overrides": [], "deleted_bands": [], "added_bands": []}
+            old_edits = {"lane_overrides": [], "deleted_bands": [], "added_bands": [], "band_kinds": []}
         old_params = dict(meta["params"])
         if body.get("match_tol") is not None:
             meta["params"]["match_tol"] = float(body["match_tol"])
@@ -597,7 +603,23 @@ class SessionStore:
                 raise ValueError(f"added band x/y must be numbers: {ab!r}")
             if not (math.isfinite(x) and math.isfinite(y)):
                 raise ValueError(f"added band x/y must be finite: {ab!r}")
-            added.append({"x": x, "y": y})
+            entry = {"x": x, "y": y}
+            if ab.get("kind") is not None:
+                entry["kind"] = _check_kind(ab["kind"])
+            added.append(entry)
+        # the user's band classifications, by detected band id (an added
+        # band carries its own kind: its id shifts when another is removed)
+        kinds: Dict[int, str] = {}
+        for bk in body.get("band_kinds") or ():
+            if not isinstance(bk, dict) or "id" not in bk or "kind" not in bk:
+                raise ValueError(f"band kind needs id and kind: {bk!r}")
+            try:
+                bid = int(bk["id"])
+            except (TypeError, ValueError):
+                raise ValueError(f"band kind id must be an integer: {bk!r}")
+            if bid >= SYNTHETIC_ID_BASE:
+                raise ValueError("an added band's kind goes on its added_bands entry")
+            kinds[bid] = _check_kind(bk["kind"])
         for key in ("match_tol", "lane_gap"):
             v = body.get(key)
             if v is None:
@@ -610,7 +632,8 @@ class SessionStore:
             if not math.isfinite(v) or v <= 0:
                 raise ValueError(f"{key} must be finite and > 0")
         return {"lane_overrides": overrides, "deleted_bands": deleted,
-                "added_bands": added}
+                "added_bands": added,
+                "band_kinds": [{"id": i, "kind": k} for i, k in kinds.items()]}
 
     @staticmethod
     def _write_edits(sdir: Path, edits: Dict) -> None:
@@ -628,11 +651,14 @@ class SessionStore:
         params = meta["params"]
 
         bands = self._apply_band_edits(raw_bands, edits)
+        kinds = {int(bk["id"]): bk["kind"] for bk in edits.get("band_kinds") or ()}
+        kinds.update({b.id: b.extra["kind"] for b in bands if b.extra.get("kind")})
         lane_map = None
         if (sdir / "lanes.json").exists():
             lane_map = Manifest.load_json(str(sdir / "lanes.json")).to_lane_map()
         ga = analyse_gel(bands, tray, lane_gap=params.get("lane_gap", 20.0),
-                         match_tol=params.get("match_tol", 0.25), lane_map=lane_map)
+                         match_tol=params.get("match_tol", 0.25), lane_map=lane_map,
+                         band_kinds=kinds)
         self._apply_lane_overrides(ga, edits.get("lane_overrides"))
         result = type_sample(ga, tray)
 
@@ -689,9 +715,12 @@ class SessionStore:
         next_id = SYNTHETIC_ID_BASE
         for ab in edits.get("added_bands") or ():
             x, y = float(ab["x"]), float(ab["y"])
+            extra = {"synthetic": True}
+            if ab.get("kind"):
+                extra["kind"] = ab["kind"]
             out.append(Band(id=next_id, area=1, centroid_y=y, centroid_x=x,
                             bbox=(int(y), int(x), int(y) + 1, int(x) + 1),
-                            extra={"synthetic": True}))
+                            extra=extra))
             next_id += 1
         return out
 

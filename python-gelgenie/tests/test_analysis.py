@@ -392,3 +392,64 @@ def test_control_sizes_on_one_row_fall_back_to_the_default_slope():
     ga = analyse_gel(bands, tray)
     assert ga.slope_b == DEFAULT_BP_SLOPE
     assert any('calibrat' in w for w in ga.warnings)
+
+
+# ---------- bands classified by hand ----------
+
+def _ided(bands):
+    for i, b in enumerate(bands):
+        b.id = i + 1
+    return bands
+
+
+def _gel01_lane3():
+    # Gel_01 lane 3: the 813 bp product sizes ~1115 bp, beyond any sane
+    # tolerance; lane 5 has an in-tolerance 500 bp product
+    bands, _ = _synth_lanes(8)
+    bands.append(_band(120, 404 - 81 * math.log(1115 / 256), area=350))
+    bands.append(_band(220, 408 - 81 * math.log(500 / 256), area=350))
+    tray = _tray(8, products={i: [813 if i == 3 else 500] for i in range(1, 9)})
+    return _ided(bands), tray
+
+
+def test_band_marked_product_makes_its_lane_positive():
+    bands, tray = _gel01_lane3()
+    ga = analyse_gel(bands, tray)
+    assert [l.mix for l in ga.lanes if l.positive] == [5]
+    ga = analyse_gel(bands, tray, band_kinds={9: "product"})
+    assert [l.mix for l in ga.lanes if l.positive] == [3, 5]
+    call = next(c for c in ga.lanes[2].calls if c.band.id == 9)
+    assert (call.kind, call.manual, call.matched_bp) == ("product", True, 813)
+    assert call.bp_est == pytest.approx(1115, rel=0.01)  # the estimate is kept
+
+
+def test_band_marked_not_product_clears_its_lane():
+    bands, tray = _gel01_lane3()
+    for kind in ("dimer", "hmw", "unexplained"):
+        ga = analyse_gel(bands, tray, band_kinds={10: kind})
+        assert not ga.lanes[4].positive
+        call = next(c for c in ga.lanes[4].calls if c.band.id == 10)
+        assert (call.kind, call.manual) == (kind, True)
+
+
+def test_band_marked_control_becomes_the_lane_control():
+    bands, tray = _gel01_lane3()
+    ga = analyse_gel(bands, tray, band_kinds={9: "control"})
+    lane = ga.lanes[2]
+    assert lane.control_y == bands[8].centroid_y
+    kinds = {c.band.id: (c.kind, c.manual) for c in lane.calls}
+    assert kinds[9] == ("control", True)
+    assert kinds[3][0] != "control"  # the auto pick is now just a band
+
+
+def test_auto_control_marked_otherwise_is_not_picked_again():
+    bands, tray = _gel01_lane3()
+    ga = analyse_gel(bands, tray, band_kinds={2: "dimer"})  # lane 2's control
+    assert not ga.lanes[1].valid
+    assert [(c.kind, c.manual) for c in ga.lanes[1].calls] == [("dimer", True)]
+
+
+def test_unknown_band_kind_is_rejected():
+    bands, tray = _gel01_lane3()
+    with pytest.raises(ValueError, match="unknown band kind"):
+        analyse_gel(bands, tray, band_kinds={9: "positive"})
