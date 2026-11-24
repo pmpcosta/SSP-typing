@@ -453,3 +453,55 @@ def test_unknown_band_kind_is_rejected():
     bands, tray = _gel01_lane3()
     with pytest.raises(ValueError, match="unknown band kind"):
         analyse_gel(bands, tray, band_kinds={9: "positive"})
+
+
+# ---------- the primer-dimer front ----------
+
+def test_dimer_row_does_not_outvote_the_control_row():
+    # Gel_04 lanes 33-64: the 256 bp controls (y 254) are missing in three
+    # lanes that hold only a strong dimer, so the dimer front (y 308) has
+    # bands in more lanes than the control row
+    no_ctrl = {2, 16, 30}
+    bands = []
+    for i in range(32):
+        x = 20 + i * 50
+        if i not in no_ctrl:
+            bands.append(_band(x, 254, area=400))
+        if i:
+            bands.append(_band(x, 308, area=500))
+    bands += [_band(20 + i * 50, 199) for i in (3, 8, 13)]  # three products
+    lm = LaneMap(slots=[(i * 50, i * 50 + 40) for i in range(32)], panels=[(0, 31)])
+    ga = analyse_gel(bands, _tray(32, products={i: [600] for i in range(1, 33)}),
+                     lane_map=lm)
+    assert [l.control_y for l in ga.lanes] == [
+        None if i in no_ctrl else 254 for i in range(32)]
+    assert [l.mix for l in ga.lanes if l.positive] == [4, 9, 14]
+    assert {c.kind for l in ga.lanes if l.valid
+            for c in l.calls if c.band.centroid_y == 308} == {'dimer'}
+
+
+def test_small_products_are_matched_by_position_near_the_dimer_front():
+    # Gel_01 / Gel_04: mix 57 lists a 128 bp product. A lane holding only the
+    # dimer (y 297, which sizes within 25% of 128 bp) is negative; a lane with
+    # a band between the control and the front (y 266, sized ~170 bp) is
+    # positive through that band, and its dimer stays a dimer
+    bands = []
+    for i in range(8):
+        bands += [_band(20 + i * 50, 240, area=400), _band(20 + i * 50, 297, area=500)]
+    bands.append(_band(20 + 5 * 50, 266, area=420))
+    ga = analyse_gel(bands, _tray(8, products={i: [128] for i in range(1, 9)}),
+                     slope_b=63.09)
+    assert [l.positive for l in ga.lanes] == [False] * 5 + [True] + [False] * 2
+    lane6 = {round(c.band.centroid_y): (c.kind, c.matched_bp) for c in ga.lanes[5].calls}
+    assert lane6 == {240: ('control', 256), 266: ('product', 128), 297: ('dimer', None)}
+
+
+def test_a_product_away_from_the_dimer_front_still_matches_by_size():
+    # a 200 bp listed product expected well above the front keeps size matching
+    bands = []
+    for i in range(8):
+        bands += [_band(20 + i * 50, 240, area=400), _band(20 + i * 50, 297, area=500)]
+    bands.append(_band(20 + 2 * 50, 256, area=420))  # 256*exp(-16/63.09) ~ 199 bp
+    ga = analyse_gel(bands, _tray(8, products={i: [200] for i in range(1, 9)}),
+                     slope_b=63.09)
+    assert [l.mix for l in ga.lanes if l.positive] == [3]
