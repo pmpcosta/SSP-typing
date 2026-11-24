@@ -557,3 +557,16 @@ def test_a_band_below_the_front_is_never_a_small_product():
     ga = analyse_gel(bands, _tray(8, products={i: [128] for i in range(1, 9)}),
                      slope_b=90.0)
     assert not any(l.positive for l in ga.lanes)
+
+
+def test_control_and_dimer_rows_closer_than_the_row_window_are_told_apart():
+    # Gel_06 lanes 49-64: a short run puts the dimer front only 43 px below
+    # the 256 bp controls, so one 50 px window holds both rows; its median
+    # (y ~257) lies between them, where no lane has a band to pick
+    bands = []
+    for i in range(16):
+        bands += [_band(20 + i * 50, 235 + i // 4, area=300),
+                  _smear(20 + i * 50, 278 + i // 4, area=450)]
+    ga = analyse_gel(bands, _tray(16))
+    assert [l.control_y for l in ga.lanes] == [235 + i // 4 for i in range(16)]
+    assert all(c.kind == 'dimer' for l in ga.lanes for c in l.calls if c.kind != 'control')
