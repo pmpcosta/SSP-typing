@@ -38,8 +38,12 @@ Standalone pipeline — no QuPath, no PyTorch at runtime:
 Upstream GelGenie documentation assets (notebooks, screenshots, presentations,
 sample gel images, training logs), the original Java QuPath extension
 (`qupath-gelgenie/`) and its extension-manager catalog were removed from this
-repository **and its history** to keep it lean and free of lab data; the
-original GelGenie repository retains them (https://github.com/mattaq31/GelGenie).
+repository **and its history** to keep it lean and free of lab data. Later,
+upstream's Electron GUI prototype (`prototype_frontend/`), the GelGenie paper's
+figure code (`paper_figure_generation/`, `other_visualizations/`) and the
+catalog-creation script were removed as well, since nothing here uses them.
+The original GelGenie repository retains all of it
+(https://github.com/mattaq31/GelGenie).
 `ssp/` is a pixel-exact port of the extension's inference path. Branding
 (`logo/`) is kept.
 

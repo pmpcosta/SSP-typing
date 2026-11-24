@@ -3,6 +3,10 @@ GelGenie Python
 
 This is the CLI and Python version of GelGenie, which allows for model training, analysis and quick inference.
 
+> In this repository, the SSP typing app lives in `ssp/` (see the root
+> README). This document covers the upstream GelGenie training pipeline in
+> `gelgenie/`, kept for fine-tuning the segmentation model.
+
 ## Installation
 To install the GelGenie python package and its dependencies in development mode:
 
@@ -18,9 +22,10 @@ To install the GelGenie python package and its dependencies in development mode:
 
 ## Code Organization
 The root directory for all python code is `python-gelgenie`.  Within this directory, the code is organized as follows:
-- `gelgenie` contains the main package code, including the model architectures, training and evaluation scripts, and the CLI commands.
-- `prototype_frontend` contains an initial draft setup for the GelGenie GUI, built using Electron.  We eventually discarded this prototype in favour of the QuPath extension, but it should still be functional.  Unfortunately, only classical tools are available with this prototype.
-- `paper_figure_generation` contains the entire analysis code (a mixture of Python scripts and Jupyter notebooks) used to generate the results and plots in the main GelGenie paper. This code is not intended for general use, but is provided for transparency and reproducibility.  The code here makes use of the functions within the `gelgenie` package. 
+- `ssp` is the standalone SSP typing app, with its tests in `tests` and its Docker / PyInstaller builds in `packaging`.
+- `gelgenie` contains the upstream GelGenie package code, including the model architectures, training and evaluation scripts, and the CLI commands.
+
+Upstream's Electron GUI prototype (`prototype_frontend`), the GelGenie paper's figure-generation code (`paper_figure_generation`, `other_visualizations`) and the QuPath extension-catalog script are not part of this repository; the [upstream GelGenie repository](https://github.com/mattaq31/GelGenie) has them.
 
 The `gelgenie` package is organized as follows:
 
