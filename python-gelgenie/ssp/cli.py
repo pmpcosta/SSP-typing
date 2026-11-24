@@ -47,6 +47,7 @@ from ssp.bands import (
     assign_lanes_by_edges,
     cluster_lanes_by_gap,
     mask_to_bands,
+    split_merged_bands,
 )
 from ssp.inference import GelGenieONNX
 from ssp.layout import (
@@ -85,14 +86,22 @@ def segment_image(
     min_area: int = 1,
     lane_edges: Optional[List[float]] = None,
     gap_threshold: Optional[float] = None,
+    split_merged: bool = True,
 ) -> Tuple[np.ndarray, List[Band]]:
     """Core segmentation pipeline: raw image -> binary mask -> banded lanes.
 
     Kept separate from the CLI command so it can be reused (e.g. by the future
     web app) and unit-tested without file I/O. ``invert=None`` detects the
-    polarity (see :func:`detect_invert`).
+    polarity (see :func:`detect_invert`). ``split_merged`` cuts blobs that
+    hold two touching bands (see :func:`ssp.bands.split_merged_bands`).
     """
-    mask = model.segment(raw, invert=invert, data_max_norm=data_max_norm, dtype_max=dtype_max)
+    gray = preprocessing.normalize_image(raw, data_max_norm=data_max_norm,
+                                         dtype_max=dtype_max)
+    if invert is None:
+        invert = preprocessing.has_light_background(gray)
+    mask = model.predict_mask(gray, invert=invert)
+    if split_merged:
+        mask = split_merged_bands(mask, 1.0 - gray if invert else gray).astype(mask.dtype)
     bands = mask_to_bands(mask, min_area=min_area)
 
     if lane_edges:

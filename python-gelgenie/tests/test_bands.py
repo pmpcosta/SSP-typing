@@ -109,3 +109,76 @@ def test_band_to_dict_rejects_reserved_key_collision():
              extra={"id": 99})
     with pytest.raises(ValueError):
         b.to_dict()
+
+
+# ---------- split_merged_bands ----------
+
+def _row_gel(lane_bands, n=8, pitch=40, width=24, h=120, bg=0.2):
+    """Bands-bright signal + mask. ``lane_bands[i]`` lists (y0, y1, level)
+    for lane i; lanes not listed get one 12-px band at y 40-52."""
+    sig = np.full((h, n * pitch), bg, dtype=np.float32)
+    mask = np.zeros(sig.shape, dtype=np.uint8)
+    for i in range(n):
+        x0 = i * pitch + (pitch - width) // 2
+        for y0, y1, level in lane_bands.get(i, [(40, 52, 0.9)]):
+            sig[y0:y1, x0:x0 + width] = level
+            mask[y0:y1, x0:x0 + width] = 1
+    return mask, sig
+
+
+def _blobs(mask):
+    return sorted((round(b.centroid_y), round(b.centroid_x)) for b in mask_to_bands(mask))
+
+
+def test_split_cuts_a_product_merged_under_its_control():
+    # Gel_01 lane 70: a fainter control with a strong product right below,
+    # one 24-px blob where the row's bands are 12 px
+    from ssp.bands import split_merged_bands
+    mask, sig = _row_gel({3: [(40, 52, 0.55), (52, 64, 0.95)]})
+    mask[40:64, 3 * 40 + 8:3 * 40 + 32] = 1
+    assert len(mask_to_bands(mask)) == 8
+    out = split_merged_bands(mask, sig)
+    lane3 = [c for c in _blobs(out) if c[1] == 140]
+    assert len(lane3) == 2
+    assert lane3[0][0] == pytest.approx(46, abs=2) and lane3[1][0] == pytest.approx(58, abs=2)
+
+
+def test_split_keeps_an_overloaded_band_whole():
+    from ssp.bands import split_merged_bands
+    mask, sig = _row_gel({3: [(40, 64, 0.95)]})     # tall but uniform
+    assert _blobs(split_merged_bands(mask, sig)) == _blobs(mask)
+
+
+def test_split_keeps_faint_smears_and_rows_of_tall_bands():
+    from ssp.bands import split_merged_bands
+    # faint two-level smear: tall and stepped, but far weaker than the bands
+    mask, sig = _row_gel({3: [(40, 52, 0.25), (52, 64, 0.32)]})
+    mask[40:64, 128:152] = 1
+    assert _blobs(split_merged_bands(mask, sig)) == _blobs(mask)
+    # a dimer row: every lane's band is tall, so none is an outlier
+    mask, sig = _row_gel({i: [(40, 52, 0.55), (52, 64, 0.95)] for i in range(8)})
+    assert _blobs(split_merged_bands(mask, sig)) == _blobs(mask)
+
+
+def test_segment_image_splits_unless_told_not_to():
+    from ssp.cli import segment_image
+    from ssp.inference import GelGenieONNX
+
+    class Thresh:   # foreground where the (bands-bright) input > 0.3
+        def get_inputs(self):
+            return [type('io', (), {'name': 'in'})()]
+
+        def get_outputs(self):
+            return [type('io', (), {'name': 'out'})()]
+
+        def run(self, names, feed):
+            x = feed['in']
+            fg = (x[:, 0] > 0.3).astype(np.float32)
+            return [np.stack([1 - fg, fg], axis=1)]
+
+    mask, sig = _row_gel({3: [(40, 52, 0.55), (52, 64, 0.95)]})
+    raw = (sig * 255).astype(np.uint8)
+    model = GelGenieONNX(session=Thresh())
+    _, merged = segment_image(raw, model, split_merged=False)
+    _, split = segment_image(raw, model)
+    assert len(split) == len(merged) + 1 == 9

@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
 from skimage.measure import label, regionprops
 
 
@@ -153,3 +154,87 @@ def cluster_lanes_by_gap(xs: Sequence[float], gap_threshold: float) -> List[int]
         labels[idx] = current
         prev_x = x
     return labels
+
+
+def split_merged_bands(
+    mask: np.ndarray,
+    signal: np.ndarray,
+    height_ratio: float = 1.6,
+    min_extra: int = 6,
+    min_peers: int = 5,
+    min_contrast: float = 0.5,
+    min_step: float = 0.2,
+    min_dip: float = 0.1,
+) -> np.ndarray:
+    """Cut mask blobs that hold two touching bands, e.g. a product just
+    below its control (Gel_01 lane 70: 180 bp under the 256 bp control),
+    which the model segments as one blob. Returns a new mask.
+
+    ``signal`` is the image with bands bright, in [0, 1]. A blob is cut when
+    all of these hold:
+
+    * it is at least ``height_ratio`` times (and ``min_extra`` px) taller
+      than the median blob at its height across the gel (``min_peers`` or
+      more such blobs): the bands of one row are about equally tall, while
+      primer-dimer smears are tall in every lane and so are not outliers;
+    * it is a strong band: its peak is at least ``min_contrast`` of the
+      gel's strong bands (90th percentile), as faint diffuse smears have
+      noisy profiles;
+    * its profile, in its middle 40%, shows two bands: a row that dips
+      ``min_dip`` (of the peak) below both sides, cut there; or else a step
+      where the halves' levels differ by ``min_step`` (one band riding on
+      the other's shoulder), cut at the steepest row. A uniformly
+      overloaded band is neither, and stays whole.
+
+    The cut removes that row of the blob, so the halves become two bands.
+    """
+    binary = np.asarray(mask) > 0.5
+    out = binary.copy()
+    if not binary.any():
+        return out
+    sig = np.asarray(signal, dtype=np.float32)
+    lab = label(binary.astype(np.uint8), connectivity=2)
+    regs = regionprops(lab, intensity_image=sig)
+    bg = float(np.median(sig[~binary])) if (~binary).any() else 0.0
+    strong = [r.intensity_max - bg for r in regs if r.area >= 50]
+    if not strong:
+        return out
+    ref = float(np.percentile(strong, 90))
+    heights = np.array([r.bbox[2] - r.bbox[0] for r in regs], dtype=float)
+    cys = np.array([r.centroid[0] for r in regs])
+    big = np.array([r.area >= 20 for r in regs])
+    for k, r in enumerate(regs):
+        t, l, b, rr = r.bbox
+        h = b - t
+        peers = big & (np.abs(cys - cys[k]) <= h / 2)
+        peers[k] = False
+        if peers.sum() < min_peers:
+            continue
+        typical = float(np.median(heights[peers]))
+        if h < height_ratio * typical or h - typical < min_extra:
+            continue
+        peak = float(r.intensity_max) - bg
+        if ref <= 0 or peak < min_contrast * ref:
+            continue
+        # vertical profile over the blob's middle columns
+        w = rr - l
+        c0, c1 = w // 4, w - w // 4
+        inside = r.image[:, c0:c1]
+        vals = sig[t:b, l + c0:l + c1]
+        rows = inside.any(axis=1)
+        prof = np.where(rows, (vals * inside).sum(axis=1) / np.maximum(inside.sum(axis=1), 1), bg)
+        prof = gaussian_filter1d(prof, 1.0)
+        lo, hi = int(round(0.3 * h)), int(round(0.7 * h))
+        # two bands show as a dip between them (cut at its bottom) or as
+        # one riding on the other's shoulder (cut where the level steps)
+        cut = lo + int(np.argmin(prof[lo:hi + 1]))
+        top, bottom = prof[:cut], prof[cut + 1:]
+        if not len(top) or not len(bottom):
+            continue
+        if (min(top.max(), bottom.max()) - prof[cut]) / peak < min_dip:
+            grad = np.abs(np.diff(prof))      # grad[i]: between rows i, i+1
+            cut = lo + int(np.argmax(grad[lo:hi]))
+            if abs(prof[:cut + 1].mean() - prof[cut + 1:].mean()) / peak < min_step:
+                continue
+        out[t + cut, l:rr] &= ~r.image[cut]
+    return out
