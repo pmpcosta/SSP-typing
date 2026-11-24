@@ -168,8 +168,12 @@ a.dl:hover { border-color: var(--accent); }
 #lane-table tr.positive td { background: rgba(46, 204, 113, 0.10); }
 #lane-table tr.invalid td { background: rgba(192, 57, 43, 0.15); }
 #lane-table tr.anomalous td { background: rgba(243, 156, 18, 0.08); }
-#lane-table td.call { font-weight: 700; }
+#lane-table td.call { font-weight: 700; white-space: nowrap; }
 #lane-table td.call .ov { color: var(--accent); font-weight: 400; }
+#lane-table td.call .cf { color: var(--warn); }
+#lane-table tr.conflict td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+.locus-card ul.conflicts { margin: 0.2em 0 0; padding-left: 1.4em; font-size: 0.85em; }
+.locus-card ul.conflicts li { color: var(--text); }
 .spec { max-width: 34em; }
 
 /* ---------- layout step ---------- */
