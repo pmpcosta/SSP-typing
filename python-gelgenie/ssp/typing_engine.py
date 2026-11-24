@@ -26,6 +26,13 @@ All minimum-score pairs are reported: equal-scoring pairs are genuine kit
 ambiguities (e.g. alleles that no lane on the tray distinguishes) and must
 survive into the report rather than being resolved arbitrarily.
 
+A score above 0 means no pair of the tray's listed alleles fits the gel. The
+lanes behind it are reported as ``conflicts``: a negative lane that a best
+pair's allele should have amplified, or a positive lane some best pair leaves
+unexplained, each with the tray's comment for that lane (which often names
+rare alleles the mix also amplifies). One of those lanes may be a false
+call, or the sample may carry an allele the sheet does not list.
+
 Limitations (v1):
   * lanes are scored within their tray section's locus only; cross-locus
     specificities (e.g. an A*26:04 mention inside a C-section lane) are
@@ -90,6 +97,62 @@ class _FastSpec:
 
 
 @dataclass
+class LaneConflict:
+    """A lane the best-scoring pairs disagree with."""
+
+    mix: int
+    observed: str            # "negative": a best-pair allele predicts a band
+                             # "positive": some best pairs leave it unexplained
+    alleles: List[str]       # negative: the best-pair alleles it contradicts;
+                             # positive: alleles in every pair leaving it
+                             # unexplained (empty if none is, or if no best
+                             # pair explains it)
+    pairs: int               # how many of the best pairs this lane counts against
+    comment: str = ""        # the tray sheet's note for this lane
+
+    def to_dict(self) -> Dict:
+        return {"mix": self.mix, "observed": self.observed, "alleles": self.alleles,
+                "pairs": self.pairs, "comment": self.comment}
+
+    def text(self, n_pairs: int) -> str:
+        if self.observed == "negative":
+            what = f"lane {self.mix} is negative but expected positive for {', '.join(self.alleles)}"
+        elif self.pairs == n_pairs:
+            what = f"lane {self.mix} is positive but none of the best pairs explains it"
+        elif self.pairs == 1 and self.alleles:
+            what = (f"lane {self.mix} is positive but not explained by "
+                    f"{' + '.join(self.alleles)}")
+        elif self.alleles:
+            what = (f"lane {self.mix} is positive but not explained by "
+                    f"pairs with {', '.join(self.alleles)}")
+        else:
+            what = (f"lane {self.mix} is positive but not explained by "
+                    f"{self.pairs} of {n_pairs} best pairs")
+        return what + (f"  (tray note: {self.comment})" if self.comment else "")
+
+
+def _conflicts(best: List[Tuple[str, str]], cover: Dict[str, FrozenSet[int]],
+               positives: FrozenSet[int], valid: List[int],
+               comments: Dict[int, str]) -> List[LaneConflict]:
+    """Lanes the best pairs disagree with (empty when they fit exactly)."""
+    out: List[LaneConflict] = []
+    negatives = [m for m in valid if m not in positives]
+    for m in negatives:
+        hit = [pair for pair in best if m in cover[pair[0]] or m in cover[pair[1]]]
+        if hit:
+            alleles = sorted({t for pair in hit for t in pair if m in cover[t]})
+            out.append(LaneConflict(m, "negative", alleles, len(hit), comments.get(m, "")))
+    for m in sorted(positives):
+        miss = [pair for pair in best if m not in cover[pair[0]] | cover[pair[1]]]
+        if miss:
+            common = (set(miss[0]).intersection(*map(set, miss[1:]))
+                      if len(miss) < len(best) else set())
+            out.append(LaneConflict(m, "positive", sorted(common), len(miss),
+                                    comments.get(m, "")))
+    return sorted(out, key=lambda c: c.mix)
+
+
+@dataclass
 class LocusResult:
     locus: str
     positives: List[int]
@@ -100,6 +163,7 @@ class LocusResult:
     score: Optional[int]
     allele_options: Optional[List[List[str]]]  # Cartesian form when applicable
     warnings: List[str] = field(default_factory=list)
+    conflicts: List[LaneConflict] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
         return {
@@ -112,6 +176,7 @@ class LocusResult:
             "score": self.score,
             "allele_options": self.allele_options,
             "warnings": self.warnings,
+            "conflicts": [c.to_dict() for c in self.conflicts],
         }
 
     def genotype_text(self) -> str:
@@ -142,6 +207,10 @@ class TypingResult:
             inv = f"  invalid lanes: {r.invalid}" if r.invalid else ""
             lines.append(f"HLA-{locus}: {r.genotype_text()}   "
                          f"(score {r.score}; positives {r.positives}{inv})")
+            if r.conflicts:
+                lines.append(f"  no listed pair fits: each best pair conflicts with "
+                             f"{r.score} lane(s):")
+                lines.extend(f"    {c.text(len(r.best_pairs))}" for c in r.conflicts)
         for w in self.warnings:
             lines.append(f"WARNING: {w}")
         return "\n".join(lines)
@@ -218,10 +287,13 @@ def type_sample(ga: GelAnalysis, tray: Tray) -> TypingResult:
             if cartesian == set(best):
                 allele_options = [o1, o2]
 
+        conflicts = _conflicts(best, cover, p_set, valid,
+                               {m: tray.lane(m).comment for m in valid})
         results[locus] = LocusResult(
             locus=locus, positives=positives, negatives=negatives,
             invalid=invalid, candidates=candidates, best_pairs=best,
             score=best_score, allele_options=allele_options, warnings=warnings,
+            conflicts=conflicts,
         )
         all_warnings.extend(warnings)
 

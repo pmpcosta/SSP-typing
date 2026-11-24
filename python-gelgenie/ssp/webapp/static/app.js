@@ -464,6 +464,7 @@ function draw() {
   const lanes = state.data.analysis.lanes;
   const overrides = {};
   for (const o of state.data.edits.lane_overrides || []) overrides[o.mix] = o;
+  const conflicts = conflictsByMix();
 
   // image + optional mask
   ctx.drawImage(state.img, 0, HEADER_H, imgW * s, imgH * s);
@@ -485,6 +486,10 @@ function draw() {
       ctx.lineWidth = 2;
       ctx.strokeRect(x0 + 1, 1, Math.max(1, x1 - x0 - 2), HEADER_H - 4);
       ctx.lineWidth = 1;
+    }
+    if (conflicts[lane.mix]) {   // the typing disagrees with this lane
+      ctx.fillStyle = '#f39c12';
+      ctx.fillRect(x0 + 1, HEADER_H - 5, Math.max(1, x1 - x0 - 2), 3);
     }
     if (x1 - x0 > 18) {
       ctx.fillStyle = '#d8dee9';
@@ -768,6 +773,34 @@ function genotypeText(loc) {
   return t;
 }
 
+// one line per conflicting lane (mirrors LaneConflict.text in typing_engine)
+function conflictText(c, nPairs) {
+  let t;
+  if (c.observed === 'negative') {
+    t = `lane ${c.mix} is negative but expected positive for ${c.alleles.join(', ')}`;
+  } else if (c.pairs === nPairs) {
+    t = `lane ${c.mix} is positive but none of the best pairs explains it`;
+  } else if (c.pairs === 1 && c.alleles.length) {
+    t = `lane ${c.mix} is positive but not explained by ${c.alleles.join(' + ')}`;
+  } else if (c.alleles.length) {
+    t = `lane ${c.mix} is positive but not explained by pairs with ${c.alleles.join(', ')}`;
+  } else {
+    t = `lane ${c.mix} is positive but not explained by ${c.pairs} of ${nPairs} best pairs`;
+  }
+  return c.comment ? `${t}  (tray note: ${c.comment})` : t;
+}
+
+// mix -> explanation, for every lane some locus's best calls disagree with
+function conflictsByMix() {
+  const out = {};
+  for (const loc of Object.values(state.data.typing.loci)) {
+    for (const c of loc.conflicts || []) {
+      out[c.mix] = conflictText(c, (loc.best_pairs || []).length);
+    }
+  }
+  return out;
+}
+
 function renderWarnings() {
   const ws = [...(state.data.analysis.warnings || []),
               ...(state.data.typing.warnings || [])];
@@ -783,11 +816,20 @@ function renderTyping() {
     card.className = 'locus-card' + (noCall ? ' nocall'
                      : (loc.score > 0 || (loc.warnings || []).length ? ' warn' : ''));
     const inv = (loc.invalid || []).length ? ` · invalid lanes: ${loc.invalid.join(', ')}` : '';
+    const conflicts = loc.conflicts || [];
+    const nPairs = (loc.best_pairs || []).length;
+    const fit = conflicts.length ? `
+      <div class="lwarn">⚠ No listed allele pair fits this gel: each best pair conflicts
+        with ${loc.score} lane${loc.score === 1 ? '' : 's'}. One of these lanes may be
+        a false call, or the sample may carry an allele the tray sheet does not list.</div>
+      <ul class="conflicts">${conflicts.map((c) =>
+        `<li data-mix="${c.mix}">${escapeHtml(conflictText(c, nPairs))}</li>`).join('')}</ul>` : '';
     card.innerHTML = `
       <div class="geno">HLA-${escapeHtml(locus)}: ${escapeHtml(genotypeText(loc))}</div>
       <div class="meta">score ${loc.score ?? '–'} · positives:
         ${loc.positives.length ? loc.positives.join(', ') : '—'}${escapeHtml(inv)}</div>
-      ${(loc.warnings || []).map((w) => `<div class="lwarn">⚠ ${escapeHtml(w)}</div>`).join('')}`;
+      ${(loc.warnings || []).map((w) => `<div class="lwarn">⚠ ${escapeHtml(w)}</div>`).join('')}
+      ${fit}`;
     box.appendChild(card);
   }
 }
@@ -799,6 +841,7 @@ function renderLaneTable() {
   for (const l of state.data.analysis.lanes) lanesByMix[l.mix] = l;
   const overrides = {};
   for (const o of state.data.edits.lane_overrides || []) overrides[o.mix] = o;
+  const conflicts = conflictsByMix();
 
   for (const tl of state.data.tray.lanes) {
     const lane = lanesByMix[tl.mix] || {};
@@ -811,6 +854,12 @@ function renderLaneTable() {
     const call = !lane.valid ? 'INVALID' : (lane.positive ? 'POSITIVE' : 'negative');
     const ov = overrides[tl.mix];
     const ovTxt = ov ? ` <span class="ov">(forced ${ov.positive ? '+' : '−'})</span>` : '';
+    const cf = conflicts[tl.mix];
+    if (cf) {
+      tr.classList.add('conflict');
+      tr.title = cf;
+    }
+    const cfTxt = cf ? ' <span class="cf" aria-label="conflicts with the typing">⚠</span>' : '';
     const bands = (lane.bands || [])
       .filter((b) => b.kind !== 'control' || b.manual)
       .map((b) => `${b.kind}${b.synthetic ? '(added)' : ''}${b.manual ? ' (set by hand)' : ''}`
@@ -821,7 +870,7 @@ function renderLaneTable() {
       <td>${escapeHtml(tl.locus)}</td>
       <td class="spec" title="${escapeHtml(tl.specificities)}">${escapeHtml(tl.specificities || '')}</td>
       <td>${lane.valid ? '✓' : '✗'}</td>
-      <td class="call">${call}${ovTxt}</td>
+      <td class="call">${call}${ovTxt}${cfTxt}</td>
       <td>${escapeHtml(bands)}</td>`;
     tbody.appendChild(tr);
   }

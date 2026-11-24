@@ -206,3 +206,65 @@ def test_flc_typing_end_to_end():
     c_opts = {t for pair in c.best_pairs for t in pair}
     assert {'C*04:01', 'C*04:02', 'C*04:03', 'C*18:01'} <= c_opts
     assert {'C*08:01', 'C*08:02', 'C*08:03'} <= c_opts
+
+
+# ---------- lanes the best calls disagree with ----------
+
+def _gel02_b():
+    # Gel_02 HLA-B, reduced: lanes 1/2 positive (B*51 or B*52), but the
+    # B*51 lane (3) and the B*52 lane (4) are both negative; lane 5 says
+    # B*27:08 and lane 6 is positive with nothing that fits
+    specs = {1: 'B*51:01, B*52:01', 2: 'B*51:01, B*52:01', 3: 'B*51:01',
+             4: 'B*52:01', 5: 'B*27:08', 6: 'B*45:01', 7: 'B*45:01, B*44:02'}
+    tray = Tray(name='t', lanes=[
+        TrayLane(mix=m, locus='B', product_bp=[500], control_bp=256, serotypes='',
+                 specificities=s, comment='/05?' if m == 4 else '')
+        for m, s in specs.items()])
+    return tray, _ga(positives=[1, 2, 5, 6], negatives=[3, 4, 7])
+
+
+def test_exact_fit_reports_no_conflicts():
+    tray = _tray({1: 'A*01:01', 2: 'A*02:01', 3: 'A*01:01, A*02:01', 4: 'A*03:01'})
+    a = type_sample(_ga(positives=[1, 2, 3], negatives=[4]), tray).loci['A']
+    assert a.score == 0 and a.conflicts == []
+    assert a.to_dict()['conflicts'] == []
+
+
+def test_conflicts_name_the_lanes_and_the_alleles_they_contradict():
+    tray, ga = _gel02_b()
+    b = type_sample(ga, tray).loci['B']
+    assert b.score == 2
+    got = {c.mix: (c.observed, c.alleles, c.pairs, c.comment) for c in b.conflicts}
+    n = len(b.best_pairs)
+    # every best pair needs B*51:01 or B*52:01; each one contradicts a negative
+    assert got[3][:2] == ('negative', ['B*51:01'])
+    assert got[4][:3] == ('negative', ['B*52:01'], got[4][2]) and got[4][3] == '/05?'
+    assert got[3][2] + got[4][2] == n
+    # lane 6 or 7 is the other conflict: B*45:01 explains 6 but hits 7
+    assert set(got) <= {3, 4, 6, 7} and (6 in got or 7 in got)
+    if 7 in got:
+        assert got[7][:2] == ('negative', ['B*45:01'])
+    lines = type_sample(ga, tray).summary_text()
+    assert 'no listed pair fits' in lines
+    assert 'lane 4 is negative but expected positive for B*52:01  (tray note: /05?)' in lines
+
+
+def test_unexplained_positive_lanes():
+    # lane 3's only allele is contradicted by negative lane 4, so the best
+    # pair leaves lane 3 unexplained
+    tray = _tray({1: 'A*01:01', 2: 'A*02:01', 3: 'A*03:01', 4: 'A*03:01'})
+    a = type_sample(_ga(positives=[1, 2, 3], negatives=[4]), tray).loci['A']
+    assert a.score == 1 and a.best_pairs == [('A*01:01', 'A*02:01')]
+    [c] = a.conflicts
+    assert (c.mix, c.observed, c.alleles, c.pairs) == (3, 'positive', [], 1)
+    assert c.text(1) == 'lane 3 is positive but none of the best pairs explains it'
+    # explained by some best pairs only: A*01:01 + A*02:01 leaves lane 3
+    # unexplained, A*01:01 + A*03:01 explains it but hits negative lane 4
+    tray = _tray({1: 'A*01:01', 2: 'A*02:01, A*03:01', 3: 'A*03:01', 4: 'A*03:01'})
+    a = type_sample(_ga(positives=[1, 2, 3], negatives=[4]), tray).loci['A']
+    assert a.score == 1
+    assert sorted(a.best_pairs) == [('A*01:01', 'A*02:01'), ('A*01:01', 'A*03:01')]
+    got = {c.mix: c for c in a.conflicts}
+    assert (got[3].observed, got[3].alleles, got[3].pairs) == ('positive', ['A*01:01', 'A*02:01'], 1)
+    assert got[3].text(2) == 'lane 3 is positive but not explained by A*01:01 + A*02:01'
+    assert (got[4].observed, got[4].alleles, got[4].pairs) == ('negative', ['A*03:01'], 1)
